@@ -187,8 +187,8 @@ unsafe impl HasRawWindowHandle for WindowHandle {
 
 unsafe impl HasRawDisplayHandle for WindowHandle {
     /// See:
-    ///  *  https://github.com/rust-windowing/raw-window-handle/issues/92
-    ///  * https://github.com/rust-windowing/winit/blob/92fdf5ba85f920262a61cee4590f4a11ad5738d1/src/platform_impl/windows/window.rs#L285
+    ///  * <https://github.com/rust-windowing/raw-window-handle/issues/92>
+    ///  * <https://github.com/rust-windowing/winit/blob/92fdf5ba85f920262a61cee4590f4a11ad5738d1/src/platform_impl/windows/window.rs#L285>
     fn raw_display_handle(&self) -> RawDisplayHandle {
         RawDisplayHandle::Windows(WindowsDisplayHandle::empty())
     }
@@ -798,10 +798,10 @@ impl WndProc for MyWndProc {
                             if let Some(mut s) = s.as_mut() {
                                 let border = self.get_system_metric(SM_CXPADDEDBORDER);
                                 let frame = self.get_system_metric(SM_CYSIZEFRAME);
-                                s.rgrc[0].top += (border + frame) as i32;
-                                s.rgrc[0].right -= (border + frame) as i32;
-                                s.rgrc[0].left += (border + frame) as i32;
-                                s.rgrc[0].bottom -= (border + frame) as i32;
+                                s.rgrc[0].top += border + frame;
+                                s.rgrc[0].right -= border + frame;
+                                s.rgrc[0].left += border + frame;
+                                s.rgrc[0].bottom -= border + frame;
                             }
                         }
                     }
@@ -1485,7 +1485,7 @@ impl WindowBuilder {
     }
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 type WindowLongPtr = winapi::shared::basetsd::LONG_PTR;
 #[cfg(target_arch = "x86")]
 type WindowLongPtr = LONG;
