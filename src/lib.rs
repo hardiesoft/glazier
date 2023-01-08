@@ -66,6 +66,7 @@ mod hotkey;
 mod keyboard;
 mod menu;
 mod mouse;
+mod pointer;
 mod region;
 mod scale;
 mod screen;
@@ -73,6 +74,7 @@ mod window;
 
 pub mod platform;
 pub mod text;
+
 
 pub use application::{AppHandler, Application};
 pub use clipboard::{Clipboard, ClipboardFormat, FormatId};

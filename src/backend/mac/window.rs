@@ -68,6 +68,7 @@ use crate::window::{
     FileDialogToken, IdleToken, TextFieldToken, TimerToken, WinHandler, WindowLevel, WindowState,
 };
 use crate::Error;
+use crate::pointer::{PointerButton, PointerEvent, PointerType};
 
 #[allow(non_upper_case_globals)]
 const NSWindowDidBecomeKeyNotification: &str = "NSWindowDidBecomeKeyNotification";
@@ -182,6 +183,8 @@ struct ViewState {
     idle_queue: Arc<Mutex<Vec<IdleKind>>>,
     /// Tracks window focusing left clicks
     focus_click: bool,
+    /// Tracks multi-touch events
+    accepts_touch: bool,
     // Tracks whether we have already received the mouseExited event
     mouse_left: bool,
     keyboard_state: KeyboardState,
@@ -578,6 +581,18 @@ lazy_static! {
             sel!(doCommandBySelector:),
             super::text_input::do_command_by_selector as extern fn(&mut Object, Sel, Sel),
         );
+        decl.add_method(
+            sel!(setAcceptsTouchEvents:), accepts_touch_events as extern "C" fn(&Object, Sel, id) -> BOOL,
+        );
+        extern "C" fn accepts_touch_events(this: &Object, _sel: Sel, _nsevent: id) -> BOOL {
+            unsafe {
+                let view_state: *mut c_void = *this.get_ivar("viewState");
+                let view_state = &mut *(view_state as *mut ViewState);
+                // If accepts_touch is true, we can ignore mouse events in favour of touch events.
+                view_state.accepts_touch = true;
+            }
+            YES
+        }
 
         let protocol = Protocol::get("NSTextInputClient").unwrap();
         decl.add_protocol(protocol);
@@ -660,6 +675,35 @@ extern "C" fn set_frame_size(this: &mut Object, _: Sel, size: NSSize) {
         let () = msg_send![super(this, superclass), setFrameSize: size];
     }
 }
+//
+// fn pointer_event(nsevent: id,
+//                  view: id,
+//                  count: u8,
+//                  focus: bool,
+//                  button: PointerButton,
+//                  wheel_delta: Vec2) -> PointerEvent {
+//     unsafe {
+//         let point = nsevent.locationInWindow();
+//         let view_point = view.convertPoint_fromView_(point, nil);
+//         let pos = Point::new(view_point.x as f64, view_point.y as f64);
+//         let buttons = get_mouse_buttons(NSEvent::pressedMouseButtons(nsevent));
+//         let modifiers = make_modifiers(nsevent.modifierFlags());
+//         PointerEvent {
+//             timestamp: 0,
+//             pos,
+//             buttons,
+//             count,
+//             focus,
+//             pointer_id: 0,
+//             is_primary: false,
+//             contact_geometry: Default::default(),
+//             button,
+//             wheel_delta,
+//             modifiers,
+//             pointer_type: PointerType::Mouse,
+//         }
+//     }
+// }
 
 fn mouse_event(
     nsevent: id,

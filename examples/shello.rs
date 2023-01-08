@@ -1,12 +1,10 @@
 use glazier::kurbo::Size;
-use glazier::{
-    Application, Cursor, FileDialogToken, FileInfo, IdleToken, KeyEvent, MouseEvent, Region,
-    Scalable, TimerToken, WinHandler, WindowHandle,
-};
+use glazier::{Application, Cursor, FileDialogToken, FileInfo, IdleToken, KeyEvent, MouseEvent, Region, Scalable, TimerToken, WinHandler, WindowHandle, Modifiers};
 use parley::{FontContext, Layout};
 use std::any::Any;
+use keyboard_types::{Code, KeyState};
 use vello::util::{RenderContext, RenderSurface};
-use vello::Renderer;
+use vello::{Renderer, SceneFragment};
 use vello::{
     glyph::{
         pinot::{types::Tag, FontRef},
@@ -24,6 +22,7 @@ fn main() {
     let app = Application::new().unwrap();
     let mut window_builder = glazier::WindowBuilder::new(app.clone());
     window_builder.resizable(false);
+    window_builder.set_title("Hello Vello");
     window_builder.set_size((WIDTH as f64 / 2., HEIGHT as f64 / 2.).into());
     window_builder.set_handler(Box::new(WindowState::new()));
     let window_handle = window_builder.build().unwrap();
@@ -39,6 +38,7 @@ struct WindowState {
     scene: Scene,
     size: Size,
     font_context: FontContext,
+    retained_shapes: Vec<(SceneFragment, Affine)>,
     counter: u64,
 }
 
@@ -55,6 +55,7 @@ impl WindowState {
             font_context: FontContext::new(),
             counter: 0,
             size: Size::new(800.0, 600.0),
+            retained_shapes: Vec::new()
         }
     }
 
@@ -86,8 +87,56 @@ impl WindowState {
         if self.surface.is_none() {
             self.surface = Some(self.render.create_surface(&self.handle, width, height));
         }
+        if self.retained_shapes.len() == 0 {
+            let fcx = &mut self.font_context;
+            let mut lcx = parley::LayoutContext::new();
+            let mut layout_builder =
+                lcx.ranged_builder(fcx, "Hello vello! ഹലോ ਸਤ ਸ੍ਰੀ ਅਕਾਲ مرحبا!", 1.0);
+            layout_builder.push_default(&parley::style::StyleProperty::FontSize(34.0));
+            layout_builder.push(
+                &parley::style::StyleProperty::Brush(ParleyBrush(Brush::Solid(Color::rgb8(255, 255, 0)))),
+                6..10,
+            );
+            layout_builder.push(&parley::style::StyleProperty::FontSize(48.0), 6..12);
+            layout_builder.push(
+                &parley::style::StyleProperty::Brush(ParleyBrush(Color::YELLOW.into())),
+                6..12,
+            );
+            layout_builder.push_default(&parley::style::StyleProperty::Brush(ParleyBrush(
+                Brush::Solid(Color::rgb8(255, 255, 255)),
+            )));
+            let mut layout = layout_builder.build();
+            layout.break_all_lines(None, parley::layout::Alignment::Start);
 
-        render_anim_frame(&mut self.scene, &mut self.font_context, self.counter);
+            let mut gcx = GlyphContext::new();
+            let mut glyphs = Vec::new();
+            for line in layout.lines() {
+                for glyph_run in line.glyph_runs() {
+                    let mut x = glyph_run.offset();
+                    let y = glyph_run.baseline();
+                    let run = glyph_run.run();
+                    let font = run.font().as_ref();
+                    let font_size = run.font_size();
+                    let font_ref = FontRef {
+                        data: font.data,
+                        offset: font.offset,
+                    };
+                    let style = glyph_run.style();
+                    let vars: [(Tag, f32); 0] = [];
+                    let mut gp = gcx.new_provider(&font_ref, None, font_size, false, vars);
+                    for glyph in glyph_run.glyphs() {
+                        if let Some(fragment) = gp.get(glyph.id, Some(&style.brush.0)) {
+                            let gx = x + glyph.x;
+                            let xform = Affine::translate((gx as f64, 0.0)) * Affine::scale_non_uniform(1.0, -1.0);
+                            glyphs.push((fragment, xform));
+                        }
+                        x += glyph.advance;
+                    }
+                }
+            }
+            self.retained_shapes = glyphs;
+        }
+        render_anim_frame(&mut self.scene, &self.retained_shapes, self.counter);
         self.counter += 1;
 
         if let Some(surface) = self.surface.as_mut() {
@@ -140,11 +189,26 @@ impl WinHandler for WindowState {
 
     fn key_down(&mut self, event: KeyEvent) -> bool {
         println!("keydown: {:?}", event);
+        match event {
+            // Handle cmd-q/ctrl-q to quit.
+            KeyEvent { code: Code::KeyQ, state: KeyState::Down, mods, .. } => {
+                if mods.contains(Modifiers::META) {
+                    self.request_close()
+                }
+            },
+            _ => {}
+        }
         false
     }
 
     fn key_up(&mut self, event: KeyEvent) {
         println!("keyup: {:?}", event);
+        match event {
+            KeyEvent { code: Code::Escape, state: KeyState::Up, .. } => {
+                self.request_close()
+            },
+            _ => {}
+        }
     }
 
     fn wheel(&mut self, event: &MouseEvent) {
@@ -210,8 +274,9 @@ impl PartialEq<ParleyBrush> for ParleyBrush {
 
 impl parley::style::Brush for ParleyBrush {}
 
-pub fn render_text(builder: &mut SceneBuilder, transform: Affine, layout: &Layout<ParleyBrush>) {
+pub fn render_text(builder: &mut SceneBuilder, transform: Affine, scale: f64, layout: &Layout<ParleyBrush>) {
     let mut gcx = GlyphContext::new();
+    let transform = transform * Affine::scale(scale);
     for line in layout.lines() {
         for glyph_run in line.glyph_runs() {
             let mut x = glyph_run.offset();
@@ -230,7 +295,7 @@ pub fn render_text(builder: &mut SceneBuilder, transform: Affine, layout: &Layou
                 if let Some(fragment) = gp.get(glyph.id, Some(&style.brush.0)) {
                     let gx = x + glyph.x;
                     let gy = y - glyph.y;
-                    let xform = Affine::translate((gx as f64, gy as f64))
+                    let xform = Affine::translate((gx as f64, gy as f64 * (1.0 / scale)))
                         * Affine::scale_non_uniform(1.0, -1.0);
                     builder.append(&fragment, Some(transform * xform));
                 }
@@ -240,7 +305,7 @@ pub fn render_text(builder: &mut SceneBuilder, transform: Affine, layout: &Layou
     }
 }
 
-pub fn render_anim_frame(scene: &mut Scene, fcx: &mut FontContext, i: u64) {
+pub fn render_anim_frame(scene: &mut Scene, retained_shapes: &Vec<(SceneFragment, Affine)>, i: u64) {
     let mut sb = SceneBuilder::for_scene(scene);
     let rect = Rect::from_origin_size(Point::new(0.0, 0.0), (1000.0, 1000.0));
     sb.fill(
@@ -252,25 +317,12 @@ pub fn render_anim_frame(scene: &mut Scene, fcx: &mut FontContext, i: u64) {
     );
 
     let scale = (i as f64 * 0.01).sin() * 0.5 + 1.5;
-    let mut lcx = parley::LayoutContext::new();
-    let mut layout_builder =
-        lcx.ranged_builder(fcx, "Hello vello! ഹലോ ਸਤ ਸ੍ਰੀ ਅਕਾਲ مرحبا!", scale as f32);
-    layout_builder.push_default(&parley::style::StyleProperty::FontSize(34.0));
-    layout_builder.push(
-        &parley::style::StyleProperty::Brush(ParleyBrush(Brush::Solid(Color::rgb8(255, 255, 0)))),
-        6..10,
-    );
-    layout_builder.push(&parley::style::StyleProperty::FontSize(48.0), 6..12);
-    layout_builder.push(
-        &parley::style::StyleProperty::Brush(ParleyBrush(Color::YELLOW.into())),
-        6..12,
-    );
-    layout_builder.push_default(&parley::style::StyleProperty::Brush(ParleyBrush(
-        Brush::Solid(Color::rgb8(255, 255, 255)),
-    )));
-    let mut layout = layout_builder.build();
-    layout.break_all_lines(None, parley::layout::Alignment::Start);
-    render_text(&mut sb, Affine::translate((100.0, 400.0)), &layout);
+
+    // Scale the whole layer/group
+    for (glyph, transform) in retained_shapes {
+        sb.append(glyph, Some(Affine::translate((100.0, 448.0)) * Affine::scale(scale) * *transform));
+    }
+    //render_text(&mut sb, Affine::translate((100.0, 448.0)), scale, &layout);
 
     let th = (std::f64::consts::PI / 180.0) * (i as f64);
     let center = Point::new(500.0, 500.0);
