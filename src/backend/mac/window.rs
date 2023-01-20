@@ -24,10 +24,7 @@ use std::time::Instant;
 #[cfg(feature = "accesskit")]
 use accesskit_macos::Adapter as AccessKitAdapter;
 use block::ConcreteBlock;
-use cocoa::appkit::{
-    CGFloat, NSApp, NSApplication, NSAutoresizingMaskOptions, NSBackingStoreBuffered, NSColor,
-    NSEvent, NSView, NSViewHeightSizable, NSViewWidthSizable, NSWindow, NSWindowStyleMask,
-};
+use cocoa::appkit::{CGFloat, NSApp, NSApplication, NSAutoresizingMaskOptions, NSBackingStoreBuffered, NSColor, NSEvent, NSTouchPhase, NSView, NSViewHeightSizable, NSViewWidthSizable, NSWindow, NSWindowStyleMask};
 use cocoa::base::{id, nil, BOOL, NO, YES};
 use cocoa::foundation::{
     NSArray, NSAutoreleasePool, NSInteger, NSPoint, NSRect, NSSize, NSString, NSUInteger,
@@ -68,7 +65,7 @@ use crate::window::{
     FileDialogToken, IdleToken, TextFieldToken, TimerToken, WinHandler, WindowLevel, WindowState,
 };
 use crate::Error;
-use crate::pointer::{PointerButton, PointerEvent, PointerType};
+use crate::pointer::{PointerButton, PointerButtons, PointerEvent, PointerType, TouchInfo};
 
 #[allow(non_upper_case_globals)]
 const NSWindowDidBecomeKeyNotification: &str = "NSWindowDidBecomeKeyNotification";
@@ -344,6 +341,11 @@ impl WindowBuilder {
                 handle.set_level(level);
             }
 
+            println!("Add touch event support");
+
+            let superclass = msg_send![view, superclass];
+            let _: id = msg_send![super(view, superclass), setAcceptsTouchEvents:YES];
+
             // set_window_state above could have invalidated the frame size
             let frame = NSView::frame(content_view);
 
@@ -593,10 +595,20 @@ lazy_static! {
             }
             YES
         }
+        decl.add_method(
+            sel!(setWantsRestingTouches:), wants_resting_touches as extern "C" fn(&Object, Sel, id) -> BOOL,
+        );
+        extern "C" fn wants_resting_touches(_this: &Object, _sel: Sel, _nsevent: id) -> BOOL {
+            // TODO: Not sure if we really want resting touches if other OSs can't give us those.
+            YES
+        }
+        decl.add_method(sel!(touchesBeganWithEvent:), touch_started as extern "C" fn(&mut Object, Sel, id));
+        decl.add_method(sel!(touchesMovedWithEvent:), touch_moved as extern "C" fn(&mut Object, Sel, id));
+        decl.add_method(sel!(touchesEndedWithEvent:), touch_ended as extern "C" fn(&mut Object, Sel, id));
+        decl.add_method(sel!(touchesCancelledWithEvent:), touch_cancelled as extern "C" fn(&mut Object, Sel, id));
 
         let protocol = Protocol::get("NSTextInputClient").unwrap();
         decl.add_protocol(protocol);
-
         ViewClass(decl.register())
     };
 }
@@ -633,6 +645,7 @@ fn make_view(handler: Box<dyn WinHandler>) -> (id, Weak<Mutex<Vec<IdleKind>>>) {
             focus_click: false,
             mouse_left: true,
             keyboard_state,
+            accepts_touch: true,
             //text: PietText::new_with_unique_state(),
             active_text_input: None,
             parent: None,
@@ -643,6 +656,9 @@ fn make_view(handler: Box<dyn WinHandler>) -> (id, Weak<Mutex<Vec<IdleKind>>>) {
         (*view).set_ivar("viewState", state_ptr as *mut c_void);
         let options: NSAutoresizingMaskOptions = NSViewWidthSizable | NSViewHeightSizable;
         view.setAutoresizingMask_(options);
+
+
+
         (view.autorelease(), queue_handle)
     }
 }
@@ -676,34 +692,41 @@ extern "C" fn set_frame_size(this: &mut Object, _: Sel, size: NSSize) {
     }
 }
 //
-// fn pointer_event(nsevent: id,
-//                  view: id,
-//                  count: u8,
-//                  focus: bool,
-//                  button: PointerButton,
-//                  wheel_delta: Vec2) -> PointerEvent {
-//     unsafe {
-//         let point = nsevent.locationInWindow();
-//         let view_point = view.convertPoint_fromView_(point, nil);
-//         let pos = Point::new(view_point.x as f64, view_point.y as f64);
-//         let buttons = get_mouse_buttons(NSEvent::pressedMouseButtons(nsevent));
-//         let modifiers = make_modifiers(nsevent.modifierFlags());
-//         PointerEvent {
-//             timestamp: 0,
-//             pos,
-//             buttons,
-//             count,
-//             focus,
-//             pointer_id: 0,
-//             is_primary: false,
-//             contact_geometry: Default::default(),
-//             button,
-//             wheel_delta,
-//             modifiers,
-//             pointer_type: PointerType::Mouse,
-//         }
-//     }
-// }
+fn touch_event(nsevent: id,
+                 view: id,
+                 count: u8,
+                 focus: bool) -> PointerEvent {
+    unsafe {
+        let point = nsevent.locationInWindow();
+        let view_point = view.convertPoint_fromView_(point, nil);
+        let pos = Point::new(view_point.x as f64, view_point.y as f64);
+        let modifiers = make_modifiers(nsevent.modifierFlags());
+        PointerEvent {
+            timestamp: 0,
+            pos,
+            buttons: PointerButtons::new(),
+            count,
+            focus,
+            pointer_id: 0,
+            is_primary: false,
+            button: PointerButton::None,
+            modifiers,
+            pointer_type: PointerType::Touch(TouchInfo {
+                contact_geometry: Size::ZERO, // TODO
+                pressure: None
+            }),
+        }
+    }
+}
+
+#[repr(i16)]
+#[derive(Debug)]
+enum NSEventSubtypeMouse {
+    NX_SUBTYPE_DEFAULT = 0,
+    NX_SUBTYPE_TABLET_POINT = 1,
+    NX_SUBTYPE_TABLET_PROXIMITY = 2,
+    NX_SUBTYPE_MOUSE_TOUCH= 3,
+}
 
 fn mouse_event(
     nsevent: id,
@@ -714,6 +737,30 @@ fn mouse_event(
     wheel_delta: Vec2,
 ) -> MouseEvent {
     unsafe {
+
+        let event_type = nsevent.eventType();
+        println!("Event type {:?}", event_type);
+        let st: i16 = msg_send![nsevent, subtype];
+        let sub_type:NSEventSubtypeMouse = msg_send![nsevent, subtype];
+        let device_id: u32 = msg_send![nsevent, deviceID];
+        println!("ID {}", device_id);
+        match sub_type {
+            NSEventSubtypeMouse::NX_SUBTYPE_MOUSE_TOUCH => println!("Touch event"),
+            NSEventSubtypeMouse::NX_SUBTYPE_DEFAULT => println!("Mouse event"),
+            NSEventSubtypeMouse::NX_SUBTYPE_TABLET_POINT => {
+                let pressure:f32 = msg_send![nsevent, pressure];
+                let tilt:NSPoint = msg_send![nsevent, tilt];
+                let rotation:f32 = msg_send![nsevent, rotation];
+                let tangentialPressure:f32 = msg_send![nsevent, tangentialPressure];
+                println!("Tablet point, pressure: {}, tangentialPressure: {}, tilt: ({}, {}), rotation: {}", pressure, tangentialPressure, tilt.x, tilt.y, rotation);
+            },
+            NSEventSubtypeMouse::NX_SUBTYPE_TABLET_PROXIMITY => println!("Tablet proximity"),
+        }
+        // NOTE: My Huion tablet doesn't generate tablet proximity events, just regular mouse entered events
+        //  - However, the device id of the tablet seems to be stable (though not guaranteed according to macos docs) as of 12.6.2
+        //  As such, once we've seen the tablet once, we should be able to generate fake proximity events when the pen enters/leaves again.
+        //  This is useful if we want to set a tool-specific cursor, even when the pen is just hovering, not touching.
+
         let point = nsevent.locationInWindow();
         let view_point = view.convertPoint_fromView_(point, nil);
         let pos = Point::new(view_point.x, view_point.y);
@@ -832,6 +879,7 @@ extern "C" fn mouse_move(this: &mut Object, _: Sel, nsevent: id) {
     unsafe {
         let view_state: *mut c_void = *this.get_ivar("viewState");
         let view_state = &mut *(view_state as *mut ViewState);
+
         let event = mouse_event(nsevent, this as id, 0, false, MouseButton::None, Vec2::ZERO);
         view_state.handler.mouse_move(&event);
     }
@@ -879,6 +927,61 @@ extern "C" fn scroll_wheel(this: &mut Object, _: Sel, nsevent: id) {
             Vec2::new(dx, dy),
         );
         view_state.handler.wheel(&event);
+    }
+}
+
+extern "C" fn touch_started(this: &mut Object, _: Sel, nsevent: id) {
+    unsafe {
+        let view_state: *mut c_void = *this.get_ivar("viewState");
+        let view_state = &mut *(view_state as *mut ViewState);
+        // NSSet *touches = [event touchesMatchingPhase:NSTouchPhaseBegan inView:self];
+        // Get touches
+        // Dispatch an event for each touch.
+        let event = touch_event(nsevent, this as id, 0, false);
+        view_state.handler.pointer_move(&event);
+    }
+}
+
+extern "C" fn touch_moved(this: &mut Object, _: Sel, nsevent: id) {
+    unsafe {
+        let view_state: *mut c_void = *this.get_ivar("viewState");
+        let view_state = &mut *(view_state as *mut ViewState);
+        let touches = nsevent.touchesMatchingPhase_inView_(NSTouchPhase::NSTouchPhaseTouching, this as id);
+
+        let touches_arr: id = msg_send![touches, allObjects];
+        for i in 0..touches_arr.count() {
+            let touch: id = msg_send![touches_arr, objectAtIndex:i];
+            let pos: NSPoint = msg_send![touch, normalizedPosition];
+            let touch_type: NSInteger = msg_send![touch, type];
+            //println!("Touch ({}, {}), type {}", pos.x, pos.y, touch_type);
+            if touch_type != 1 {
+                // NOTE locationInView only works for direct touchs on touch-screens, not for trackpads.
+                let loc: NSPoint = msg_send![touch, locationInView: this as id];
+                //println!("Touch ({}, {}), ({}, {})", pos.x, pos.y, loc.x, loc.y);
+            }
+        }
+        let event = touch_event(nsevent, this as id, 0, false);
+        view_state.handler.pointer_move(&event);
+    }
+}
+
+extern "C" fn touch_ended(this: &mut Object, _: Sel, nsevent: id) {
+    unsafe {
+        let view_state: *mut c_void = *this.get_ivar("viewState");
+        let view_state = &mut *(view_state as *mut ViewState);
+        // [self cancelTracking];
+        let event = touch_event(nsevent, this as id, 0, false);
+        view_state.handler.pointer_move(&event);
+    }
+}
+
+extern "C" fn touch_cancelled(this: &mut Object, _: Sel, nsevent: id) {
+    unsafe {
+        let view_state: *mut c_void = *this.get_ivar("viewState");
+        let view_state = &mut *(view_state as *mut ViewState);
+        // [self cancelTracking];
+        let event = touch_event(nsevent, this as id, 0, false);
+        view_state.handler.pointer_move(&event);
     }
 }
 

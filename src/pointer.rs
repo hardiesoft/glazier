@@ -1,22 +1,35 @@
-use keyboard_types::Modifiers;
-use kurbo::{Point, Size};
-
+use crate::Modifiers;
+use crate::kurbo::{Point, Size, Vec2};
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ExtPressureInfo {
-    tangential_pressure: f32,
-    twist: u32,
+pub struct PenInfo {
+    pub pressure: f32,
+    pub tangential_pressure: f32,
+    pub twist: u32,
 
     // TODO: We should normalise to one or the other of these.  Azimuth/angle seems conceptually easier to work with?
-    tilt_x: i32,
-    tilt_y: i32,
-    azimuth_angle: f64,
-    altitude_angle: f64
+    pub tilt_x: i32,
+    pub tilt_y: i32,
+    pub azimuth_angle: f64,
+    pub altitude_angle: f64
 }
 
-impl Default for ExtPressureInfo {
+#[derive(Debug, Clone, PartialEq)]
+pub struct TouchInfo {
+    pub contact_geometry: Size,
+    pub pressure: Option<f32>,
+    // TODO: Phase?
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MouseInfo {
+    wheel_delta: Vec2,
+}
+
+impl Default for PenInfo {
     fn default() -> Self {
-        ExtPressureInfo {
+        PenInfo {
+            pressure: 0.0, // In the range zero to one, must be 0.5 when in active buttons state for hardware that doesn't support pressure, and 0 otherwise
             tangential_pressure: 0.0,
             tilt_x: 0,
             tilt_y: 0,
@@ -27,26 +40,20 @@ impl Default for ExtPressureInfo {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct PressureInfo {
-    pressure: f32,
-    ext_pressure_info: Option<ExtPressureInfo>
-}
-
-impl Default for PressureInfo {
+impl Default for TouchInfo {
     fn default() -> Self {
-        PressureInfo {
-            pressure: 0.0, // In the range zero to one, must be 0.5 when in active buttons state for hardware that doesn't support pressure, and 0 otherwise
-            ext_pressure_info: None,
+        Self {
+            pressure: None, // In the range zero to one, must be 0.5 when in active buttons state for hardware that doesn't support pressure, and 0 otherwise
+            contact_geometry: Size::new(1., 1.),
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PointerType {
-    Mouse,
-    Pen(PressureInfo),
-    Touch(PressureInfo),
+    Mouse(MouseInfo),
+    Pen(PenInfo),
+    Touch(TouchInfo),
     // Apple has force touch devices that provide pressure info, but nothing further.
     // Assume that that may become more of a thing in the future?
 }
@@ -267,20 +274,20 @@ pub struct PointerEvent {
     pub modifiers: Modifiers,
     /// The button that was pressed down in the case of mouse-down,
     /// or the button that was released in the case of mouse-up.
-    /// This will always be `MouseButton::None` in the case of mouse-move.
+    /// This will always be `PointerButton::None` in the case of mouse-move/touch.
     pub button: PointerButton,
 
     /// Focus is `true` on macOS when the mouse-down event (or its companion mouse-up event)
     /// with `MouseButton::Left` was the event that caused the window to gain focus.
     pub focus: bool,
 
+    // TODO: Should this be here, or only in mouse/pen events?
+    pub count: u8,
+
     // This is a super-set of mouse events and stylus + touch events.
     pub pointer_id: u32,
     pub is_primary: bool,
-    pub contact_geometry: Size, // Only really makes sense for touch events, otherwise it's just 1,1
     pub pointer_type: PointerType,
-
-    // TODO: CoalescedEvents, PredictedEvents
 }
 
 // Do we need a way of getting at maxTouchPoints?
@@ -294,10 +301,10 @@ impl Default for PointerEvent {
             modifiers: Default::default(),
             button: PointerButton::None,
             focus: false,
+            count: 0,
             pointer_id: 0,
             is_primary: true,
-            contact_geometry: Size::new(1., 1.),
-            pointer_type: PointerType::Mouse,
+            pointer_type: PointerType::Mouse(MouseInfo { wheel_delta: Vec2::ZERO }),
         }
     }
 }

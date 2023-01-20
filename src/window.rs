@@ -33,6 +33,7 @@ use crate::text::{Event, InputHandler};
 use raw_window_handle::{
     HasRawDisplayHandle, HasRawWindowHandle, RawDisplayHandle, RawWindowHandle,
 };
+use crate::pointer::PointerEvent;
 
 /// A token that uniquely identifies a running timer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Hash)]
@@ -677,6 +678,10 @@ pub trait WinHandler {
     /// Called when the mouse moves.
     #[allow(unused_variables)]
     fn mouse_move(&mut self, event: &MouseEvent) {}
+
+    /// Called when a pointer moves.
+    #[allow(unused_variables)]
+    fn pointer_move(&mut self, event: &PointerEvent) {}
 
     /// Called on mouse button down.
     #[allow(unused_variables)]
