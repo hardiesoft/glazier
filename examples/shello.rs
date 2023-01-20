@@ -32,8 +32,8 @@ fn main() {
 
 struct WindowState {
     handle: WindowHandle,
+    renderer: Option<Renderer>,
     render: RenderContext,
-    renderer: Renderer,
     surface: Option<RenderSurface>,
     scene: Scene,
     size: Size,
@@ -44,13 +44,12 @@ struct WindowState {
 
 impl WindowState {
     pub fn new() -> Self {
-        let render = pollster::block_on(RenderContext::new()).unwrap();
-        let renderer = Renderer::new(&render.device).unwrap();
+        let render = RenderContext::new().unwrap();
         Self {
             handle: Default::default(),
             surface: None,
+            renderer: None,
             render,
-            renderer,
             scene: Default::default(),
             font_context: FontContext::new(),
             counter: 0,
@@ -85,7 +84,11 @@ impl WindowState {
     fn render(&mut self) {
         let (width, height) = self.surface_size();
         if self.surface.is_none() {
-            self.surface = Some(self.render.create_surface(&self.handle, width, height));
+            self.surface = Some(pollster::block_on(self.render.create_surface(
+                &self.handle,
+                width,
+                height,
+            )));
         }
         if self.retained_shapes.len() == 0 {
             let fcx = &mut self.font_context;
@@ -144,15 +147,12 @@ impl WindowState {
                 self.render.resize_surface(surface, width, height);
             }
             let surface_texture = surface.surface.get_current_texture().unwrap();
+            let dev_id = surface.dev_id;
+            let device = &self.render.devices[dev_id].device;
+            let queue = &self.render.devices[dev_id].queue;
             self.renderer
-                .render_to_surface(
-                    &self.render.device,
-                    &self.render.queue,
-                    &self.scene,
-                    &surface_texture,
-                    width,
-                    height,
-                )
+                .get_or_insert_with(|| Renderer::new(device).unwrap())
+                .render_to_surface(device, queue, &self.scene, &surface_texture, width, height)
                 .unwrap();
             surface_texture.present();
         }
