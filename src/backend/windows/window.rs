@@ -29,7 +29,7 @@ use accesskit_windows::{Adapter as AccessKitAdapter, UiaInitMarker};
 #[cfg(feature = "accesskit")]
 use once_cell::unsync::OnceCell;
 use scopeguard::defer;
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 use winapi::ctypes::{c_int, c_void};
 use winapi::shared::minwindef::*;
 use winapi::shared::windef::*;
@@ -64,10 +64,11 @@ use crate::dialog::{FileDialogOptions, FileDialogType, FileInfo};
 use crate::error::Error as ShellError;
 use crate::keyboard::{KbKey, KeyState};
 use crate::mouse::{Cursor, CursorDesc, MouseButton, MouseButtons, MouseEvent};
+use crate::pointer::{MouseInfo, PenInfo, PointerButton, PointerButtons, PointerEvent, PointerType, TouchInfo};
 use crate::region::Region;
 use crate::scale::{Scalable, Scale, ScaledArea};
 use crate::text::{simulate_input, Event};
-use crate::window;
+use crate::{Modifiers, window};
 use crate::window::{
     FileDialogToken, IdleToken, TextFieldToken, TimerToken, WinHandler, WindowLevel,
 };
@@ -410,6 +411,44 @@ fn set_style(hwnd: HWND, resizable: bool, titlebar: bool) {
     }
 }
 
+fn get_pointer_type(wparam: WPARAM) -> (PointerType, POINTER_INFO) {
+    let pointer_id = LOWORD(wparam as u32) as u32;
+    let mut pointer_type =  0;
+    unsafe { GetPointerType(pointer_id, &mut pointer_type) };
+    match pointer_type {
+        PT_MOUSE | PT_TOUCHPAD => {
+            let mut info: POINTER_INFO = POINTER_INFO::default();
+            unsafe { GetPointerInfo(pointer_id, &mut info ) };
+            // TODO: What is special about PT_TOUCHPAD?
+            (PointerType::Mouse(MouseInfo {
+                wheel_delta: Vec2::ZERO
+            }), info)
+        }
+        PT_PEN => {
+            let mut info: POINTER_PEN_INFO = POINTER_PEN_INFO::default();
+            unsafe { GetPointerPenInfo(pointer_id, &mut info) };
+            let (altitude_angle, azimuth_angle) = PenInfo::tilt_to_spherical(info.tiltX, info.tiltY);
+            (PointerType::Pen(PenInfo {
+                pressure: info.pressure as f32 / 1024.0, // normalise to 0.0..1.0
+                tangential_pressure: 0.0, // Not available on windows
+                twist: info.rotation as u16, // Clockwise rotation 0..359, no translation needed.
+                azimuth_angle,
+                altitude_angle,
+            }), info.pointerInfo)
+        }
+        PT_TOUCH => {
+            let mut info: POINTER_TOUCH_INFO = POINTER_TOUCH_INFO::default();
+            unsafe { GetPointerTouchInfo(pointer_id, &mut info) };
+            (PointerType::Touch(TouchInfo {
+                // TODO: Can we assume that the contact geometry is *always* centered around the pointer pos?
+                contact_geometry: Default::default(),
+                pressure: None,
+            }), info.pointerInfo)
+        }
+        PT_POINTER | _ => panic!("Unknown or invalid pointer type")
+    }
+}
+
 impl WndState {
     // Renders but does not present.
     fn render(&mut self, invalid: &Region) {
@@ -665,7 +704,7 @@ impl WndProc for MyWndProc {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> Option<LRESULT> {
-        //println!("wndproc msg: {}", msg);
+      //  println!("wndproc msg: {:#x}", msg);
         match msg {
             WM_CREATE => {
                 // Only supported on Windows 10, Could remove this as the 8.1 version below also works on 10..
@@ -938,47 +977,184 @@ impl WndProc for MyWndProc {
                     }
                 }
             }
-            WM_MOUSEWHEEL | WM_MOUSEHWHEEL => {
-                // TODO: apply mouse sensitivity based on
-                // SPI_GETWHEELSCROLLLINES setting.
+            WM_POINTERUPDATE | WM_POINTERUP | WM_POINTERDOWN | WM_POINTERACTIVATE |
+            WM_POINTERCAPTURECHANGED | WM_POINTERDEVICEINRANGE | WM_POINTERDEVICEOUTOFRANGE |
+            WM_POINTERDEVICECHANGE | WM_POINTERWHEEL | WM_POINTERHWHEEL | WM_POINTERENTER |
+            WM_POINTERLEAVE => {
                 let handled = self.with_wnd_state(|s| {
-                    let system_delta = HIWORD(wparam as u32) as i16 as f64;
-                    let down_state = LOWORD(wparam as u32) as usize;
-                    let mods = s.keyboard_state.get_modifiers();
-                    let is_shift = mods.shift();
-                    let wheel_delta = match msg {
-                        WM_MOUSEWHEEL if is_shift => Vec2::new(-system_delta, 0.),
-                        WM_MOUSEWHEEL => Vec2::new(0., -system_delta),
-                        WM_MOUSEHWHEEL => Vec2::new(system_delta, 0.),
-                        _ => unreachable!(),
+                    // Common position info
+                    // let x = LOWORD(lparam as u32) as i16 as i32;
+                    // let y = HIWORD(lparam as u32) as i16 as i32;
+                    // let pos = Point::new(x as f64, y as f64).to_dp(self.scale());
+                    let modifiers = s.keyboard_state.get_modifiers();
+                    // Get shared pointer info:
+                    // timestamp
+                    // pointer flags
+                    // history count (check if there are other coalesced events to extract)
+                    // Key states (it's more correct to get the keystates when the event happened,
+                    // rather than when it was processed)
+                    // Button change type
+                    let pointer_id = LOWORD(wparam as u32) as u32;
+                    let mut pointer_type =  0;
+                    unsafe { GetPointerType(pointer_id, &mut pointer_type) };
+                    let (pointer_type, shared_pointer_info) = match pointer_type {
+                        PT_MOUSE | PT_TOUCHPAD => {
+                            let mut info: POINTER_INFO = POINTER_INFO::default();
+                            unsafe { GetPointerInfo(pointer_id, &mut info ) };
+                            // TODO: What is special about PT_TOUCHPAD?
+                            (PointerType::Mouse(MouseInfo {
+                                wheel_delta: Vec2::ZERO, // TODO - Wheel delta comes from
+                            }), info)
+                        }
+                        PT_PEN => {
+                            let mut info: POINTER_PEN_INFO = POINTER_PEN_INFO::default();
+                            unsafe { GetPointerPenInfo(pointer_id, &mut info) };
+                            let (altitude_angle, azimuth_angle) = PenInfo::tilt_to_spherical(info.tiltX, info.tiltY);
+                            (PointerType::Pen(PenInfo {
+                                pressure: info.pressure as f32 / 1024.0, // normalise to 0.0..1.0
+                                tangential_pressure: 0.0, // Not available on windows
+                                twist: info.rotation as u16, // Clockwise rotation 0..359, no translation needed.
+                                azimuth_angle,
+                                altitude_angle,
+                            }), info.pointerInfo)
+                        }
+                        PT_TOUCH => {
+                            let mut info: POINTER_TOUCH_INFO = POINTER_TOUCH_INFO::default();
+                            unsafe { GetPointerTouchInfo(pointer_id, &mut info) };
+                            (PointerType::Touch(TouchInfo {
+                                // TODO: Can we assume that the contact geometry is *always* centered around the pointer pos?
+                                contact_geometry: Default::default(),
+                                pressure: None,
+                            }), info.pointerInfo)
+                        }
+                        PT_POINTER | _ => unreachable!("Unknown or invalid pointer type")
                     };
-
-                    let mut p = POINT {
-                        x: LOWORD(lparam as u32) as i16 as i32,
-                        y: HIWORD(lparam as u32) as i16 as i32,
-                    };
-                    unsafe {
-                        if ScreenToClient(hwnd, &mut p) == FALSE {
-                            warn!(
+                    let mut buttons = PointerButtons::new();
+                    let is_pointer_new = shared_pointer_info.pointerFlags & POINTER_FLAG_NEW == POINTER_FLAG_NEW;
+                    let is_pointer_in_range = shared_pointer_info.pointerFlags & POINTER_FLAG_INRANGE == POINTER_FLAG_INRANGE;
+                    let is_pointer_in_contact = shared_pointer_info.pointerFlags & POINTER_FLAG_INCONTACT == POINTER_FLAG_INCONTACT;
+                    let is_pointer_first_button = shared_pointer_info.pointerFlags & POINTER_FLAG_FIRSTBUTTON == POINTER_FLAG_FIRSTBUTTON;
+                    let is_pointer_second_button = shared_pointer_info.pointerFlags & POINTER_FLAG_SECONDBUTTON == POINTER_FLAG_SECONDBUTTON;
+                    let is_pointer_third_button = shared_pointer_info.pointerFlags & POINTER_FLAG_THIRDBUTTON == POINTER_FLAG_THIRDBUTTON;
+                    let is_pointer_fourth_button = shared_pointer_info.pointerFlags & POINTER_FLAG_FOURTHBUTTON == POINTER_FLAG_FOURTHBUTTON;
+                    let is_pointer_fifth_button = shared_pointer_info.pointerFlags & POINTER_FLAG_FIFTHBUTTON == POINTER_FLAG_FIFTHBUTTON;
+                    let is_pointer_primary = shared_pointer_info.pointerFlags & POINTER_FLAG_PRIMARY == POINTER_FLAG_PRIMARY;
+                    let has_pointer_confidence = shared_pointer_info.pointerFlags & POINTER_FLAG_CONFIDENCE == POINTER_FLAG_CONFIDENCE;
+                    let is_pointer_canceled = shared_pointer_info.pointerFlags & POINTER_FLAG_CANCELED == POINTER_FLAG_CANCELED;
+                    let is_pointer_down = shared_pointer_info.pointerFlags & POINTER_FLAG_DOWN == POINTER_FLAG_DOWN;
+                    let is_pointer_update = shared_pointer_info.pointerFlags & POINTER_FLAG_UPDATE == POINTER_FLAG_UPDATE;
+                    let is_pointer_up = shared_pointer_info.pointerFlags & POINTER_FLAG_UP == POINTER_FLAG_UP;
+                    let is_pointer_wheel = shared_pointer_info.pointerFlags & POINTER_FLAG_WHEEL == POINTER_FLAG_WHEEL;
+                    let is_pointer_hwheel = shared_pointer_info.pointerFlags & POINTER_FLAG_HWHEEL == POINTER_FLAG_HWHEEL;
+                    let is_pointer_capture_changed = shared_pointer_info.pointerFlags & POINTER_FLAG_CAPTURECHANGED == POINTER_FLAG_CAPTURECHANGED;
+                    let is_pointer_has_transform = shared_pointer_info.pointerFlags & POINTER_FLAG_HASTRANSFORM == POINTER_FLAG_HASTRANSFORM;
+                    let pos = {
+                        let mut p = shared_pointer_info.ptPixelLocationRaw;
+                        unsafe {
+                            if ScreenToClient(hwnd, &mut p) == FALSE {
+                                warn!(
                                 "ScreenToClient failed: {}",
                                 Error::Hr(HRESULT_FROM_WIN32(GetLastError()))
                             );
-                            return false;
+                                return false;
+                            }
                         }
+                        let POINT { x, y } = p;
+                        Point::new(x as f64, y as f64).to_dp(self.scale())
+                    };
+
+                    if is_pointer_first_button {
+                        buttons.insert(PointerButton::Left);
+                    }
+                    if is_pointer_second_button {
+                        buttons.insert(PointerButton::Right);
+                    }
+                    if is_pointer_third_button {
+                        buttons.insert(PointerButton::Middle);
+                    }
+                    if is_pointer_fourth_button {
+                        buttons.insert(PointerButton::X1);
+                    }
+                    if is_pointer_fifth_button {
+                        buttons.insert(PointerButton::X2);
                     }
 
-                    let pos = Point::new(p.x as f64, p.y as f64).to_dp(self.scale());
-                    let buttons = get_buttons(down_state);
-                    let event = MouseEvent {
+                    if shared_pointer_info.historyCount != 1 {
+                        println!("#({}) !! {} More pointer events!", msg, shared_pointer_info.historyCount);
+
+                        // TODO - Get coalesced events and dispatch in order
+                    }
+
+                    let button = match shared_pointer_info.ButtonChangeType {
+                        POINTER_CHANGE_NONE => PointerButton::None,
+                        POINTER_CHANGE_FIRSTBUTTON_DOWN => PointerButton::Left,
+                        POINTER_CHANGE_FIRSTBUTTON_UP => PointerButton::None,
+                        POINTER_CHANGE_SECONDBUTTON_DOWN => PointerButton::Right,
+                        POINTER_CHANGE_SECONDBUTTON_UP => PointerButton::None,
+                        POINTER_CHANGE_THIRDBUTTON_DOWN => PointerButton::Middle,
+                        POINTER_CHANGE_THIRDBUTTON_UP => PointerButton::None,
+                        POINTER_CHANGE_FOURTHBUTTON_DOWN => PointerButton::X1,
+                        POINTER_CHANGE_FOURTHBUTTON_UP => PointerButton::None,
+                        POINTER_CHANGE_FIFTHBUTTON_DOWN => PointerButton::X2,
+                        POINTER_CHANGE_FIFTHBUTTON_UP => PointerButton::None,
+                        _ => unreachable!("Unknown button state change")
+                    };
+                    // TODO - Handle buttons changed
+                    let mut event = PointerEvent {
+                        timestamp: shared_pointer_info.dwTime,
+                        pointer_id: shared_pointer_info.pointerId,
                         pos,
                         buttons,
-                        mods,
+                        modifiers,
+                        pointer_type,
                         count: 0,
                         focus: false,
-                        button: MouseButton::None,
-                        wheel_delta,
+                        button: PointerButton::None,
+                        is_primary: is_pointer_primary,
                     };
-                    s.handler.wheel(&event);
+                    println!("PointerEvent({}) {:?}", msg, event);
+                    match msg {
+                        WM_POINTERWHEEL | WM_POINTERHWHEEL => {
+                            // TODO: apply mouse sensitivity based on
+                            // SPI_GETWHEELSCROLLLINES setting.
+                            let system_delta = HIWORD(wparam as u32) as i16 as f64;
+                            let is_shift = modifiers.shift();
+                            let delta = match msg {
+                                WM_POINTERWHEEL if is_shift => Vec2::new(-system_delta, 0.),
+                                WM_POINTERWHEEL => Vec2::new(0., -system_delta),
+                                WM_POINTERHWHEEL => Vec2::new(system_delta, 0.),
+                                _ => unreachable!(),
+                            };
+                            if let PointerType::Mouse(MouseInfo { wheel_delta }) = &mut event.pointer_type {
+                                wheel_delta.x = delta.x;
+                                wheel_delta.y = delta.y;
+                            }
+                            s.handler.wheel(&event);
+                        }
+                        WM_POINTERUPDATE => {
+                            // Send pointer move *only* if the pointer position has changed?
+                            s.handler.pointer_move(&event);
+                        }
+                        WM_POINTERDOWN | WM_POINTERUP => {
+
+                        }
+                        WM_POINTERENTER => {
+                            // Can happen with multiple pointers
+                        }
+                        WM_POINTERLEAVE => {
+                            s.has_mouse_focus = false;
+                            s.handler.mouse_leave();
+                        }
+                        WM_POINTERACTIVATE => {
+                            // TODO
+                        }
+                        WM_POINTERDEVICEINRANGE | WM_POINTERDEVICEOUTOFRANGE => {
+                            // TODO - see if we can trigger this
+                            println!("PointerEvent({}) {:?}", msg, event);
+                        }
+                        _ => unreachable!()
+                    }
+                    // What kind of pointer event was this?
                     true
                 });
                 if handled == Some(false) {
@@ -987,6 +1163,55 @@ impl WndProc for MyWndProc {
                     Some(0)
                 }
             }
+            // WM_POINTERWHEEL | WM_POINTERHWHEEL => {
+            //     // TODO: apply mouse sensitivity based on
+            //     // SPI_GETWHEELSCROLLLINES setting.
+            //     let handled = self.with_wnd_state(|s| {
+            //         let system_delta = HIWORD(wparam as u32) as i16 as f64;
+            //         let down_state = LOWORD(wparam as u32) as usize;
+            //         let mods = s.keyboard_state.get_modifiers();
+            //         let is_shift = mods.shift();
+            //         let wheel_delta = match msg {
+            //             WM_MOUSEWHEEL if is_shift => Vec2::new(-system_delta, 0.),
+            //             WM_MOUSEWHEEL => Vec2::new(0., -system_delta),
+            //             WM_MOUSEHWHEEL => Vec2::new(system_delta, 0.),
+            //             _ => unreachable!(),
+            //         };
+            //
+            //         let mut p = POINT {
+            //             x: LOWORD(lparam as u32) as i16 as i32,
+            //             y: HIWORD(lparam as u32) as i16 as i32,
+            //         };
+            //         unsafe {
+            //             if ScreenToClient(hwnd, &mut p) == FALSE {
+            //                 warn!(
+            //                     "ScreenToClient failed: {}",
+            //                     Error::Hr(HRESULT_FROM_WIN32(GetLastError()))
+            //                 );
+            //                 return false;
+            //             }
+            //         }
+            //
+            //         let pos = Point::new(p.x as f64, p.y as f64).to_dp(self.scale());
+            //         let buttons = get_buttons(down_state);
+            //         let event = MouseEvent {
+            //             pos,
+            //             buttons,
+            //             mods,
+            //             count: 0,
+            //             focus: false,
+            //             button: MouseButton::None,
+            //             wheel_delta,
+            //         };
+            //         s.handler.wheel(&event);
+            //         true
+            //     });
+            //     if handled == Some(false) {
+            //         None
+            //     } else {
+            //         Some(0)
+            //     }
+            // }
             WM_MOUSEMOVE => {
                 self.with_wnd_state(|s| {
                     let x = LOWORD(lparam as u32) as i16 as i32;

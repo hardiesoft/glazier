@@ -668,7 +668,7 @@ pub trait WinHandler {
     ///
     /// [WheelEvent]: https://w3c.github.io/uievents/#event-type-wheel
     #[allow(unused_variables)]
-    fn wheel(&mut self, event: &MouseEvent) {}
+    fn wheel(&mut self, event: &PointerEvent) {}
 
     /// Called when a platform-defined zoom gesture occurs (such as pinching
     /// on the trackpad).

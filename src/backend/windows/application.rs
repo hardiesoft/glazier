@@ -21,7 +21,7 @@ use std::ptr;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use winapi::shared::minwindef::{FALSE, HINSTANCE};
+use winapi::shared::minwindef::{FALSE, HINSTANCE, TRUE};
 use winapi::shared::ntdef::LPCWSTR;
 use winapi::shared::windef::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, HCURSOR, HWND};
 use winapi::shared::winerror::HRESULT_FROM_WIN32;
@@ -29,11 +29,7 @@ use winapi::um::errhandlingapi::GetLastError;
 use winapi::um::shellscalingapi::PROCESS_PER_MONITOR_DPI_AWARE;
 use winapi::um::winnls::GetUserDefaultLocaleName;
 use winapi::um::winnt::LOCALE_NAME_MAX_LENGTH;
-use winapi::um::winuser::{
-    DispatchMessageW, GetAncestor, GetMessageW, LoadIconW, PeekMessageW, PostMessageW,
-    PostQuitMessage, RegisterClassW, TranslateAcceleratorW, TranslateMessage, GA_ROOT,
-    IDI_APPLICATION, MSG, PM_NOREMOVE, WM_TIMER, WNDCLASSW,
-};
+use winapi::um::winuser::{DispatchMessageW, GetAncestor, GetMessageW, LoadIconW, PeekMessageW, PostMessageW, PostQuitMessage, RegisterClassW, TranslateAcceleratorW, TranslateMessage, GA_ROOT, IDI_APPLICATION, MSG, PM_NOREMOVE, WM_TIMER, WNDCLASSW, EnableMouseInPointer};
 
 use crate::application::AppHandler;
 
@@ -104,6 +100,11 @@ impl Application {
                 panic!("Error registering class");
             }
         }
+
+        // Mouse events are reported as pointer events, allowing us to use unified handlers
+        // for all pointer types
+        unsafe { EnableMouseInPointer(TRUE); }
+
         Ok(())
     }
 

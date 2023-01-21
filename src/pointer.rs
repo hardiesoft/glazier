@@ -1,17 +1,123 @@
+use std::time::Instant;
 use crate::Modifiers;
 use crate::kurbo::{Point, Size, Vec2};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PenInfo {
-    pub pressure: f32,
+    pub pressure: f32, // 0.0..1.0
     pub tangential_pressure: f32,
-    pub twist: u32,
+    pub azimuth_angle: f32, // Radians
+    pub altitude_angle: f32, // Radians
+    pub twist: u16, // 0..359 degrees clockwise rotation
+}
 
-    // TODO: We should normalise to one or the other of these.  Azimuth/angle seems conceptually easier to work with?
-    pub tilt_x: i32,
-    pub tilt_y: i32,
-    pub azimuth_angle: f64,
-    pub altitude_angle: f64
+impl PenInfo {
+    // NOTE: We store pen tilt as azimuth_angle/altitude_angle, since it's generally a more
+    //  intuitive way of thinking about physical pen orientation.  If tilt_x/tilt_y are preferred
+    //  for some application, we provide functions to convert back to these units.
+    //  Functions are taken from:
+    //  https://www.w3.org/TR/pointerevents3/#converting-between-tiltx-tilty-and-altitudeangle-azimuthangle
+
+    pub fn spherical_to_tilt(altitude_angle: f32, azimuth_angle: f32) -> (i32, i32) {
+        use std::f32::consts::{PI, TAU};
+        let rad_to_deg = 180.0 / PI;
+        let mut tilt_y_rad = 0.0;
+        let mut tilt_x_rad = 0.0;
+        if altitude_angle == 0.0 {
+            // the pen is in the X-Y plane
+            if azimuth_angle == 0.0 || azimuth_angle == TAU {
+                // pen is on positive X axis
+                tilt_x_rad = PI / 2.0;
+            }
+            if azimuth_angle == PI / 2.0 {
+                // pen is on positive Y axis
+                tilt_y_rad = PI / 2.0;
+            }
+            if azimuth_angle == PI {
+                // pen is on negative X axis
+                tilt_x_rad = -PI / 2.0;
+            }
+            if azimuth_angle == 3.0 * PI / 2.0 {
+                // pen is on negative Y axis
+                tilt_y_rad = -PI / 2.0;
+            }
+            if azimuth_angle > 0.0 && azimuth_angle < PI / 2.0{
+                tilt_x_rad = PI / 2.0;
+                tilt_y_rad = PI / 2.0;
+            }
+            if azimuth_angle > PI / 2.0 && azimuth_angle < PI {
+                tilt_x_rad = -PI / 2.0;
+                tilt_y_rad = PI / 2.0;
+            }
+            if azimuth_angle > PI && azimuth_angle < 3.0 * PI / 2.0 {
+                tilt_x_rad = -PI / 2.0;
+                tilt_y_rad = -PI / 2.0;
+            }
+            if azimuth_angle > 3.0 * PI / 2.0 && azimuth_angle < TAU {
+                tilt_x_rad = PI / 2.0;
+                tilt_y_rad = -PI / 2.0;
+            }
+        };
+
+        if altitude_angle != 0.0 {
+            let tan_alt = altitude_angle.tan();
+            tilt_x_rad = f32::atan(f32::cos(azimuth_angle) / tan_alt);
+            tilt_y_rad = f32::atan(f32::sin(azimuth_angle) / tan_alt);
+        }
+        (
+            f32::round(tilt_x_rad * rad_to_deg) as i32,
+            f32::round(tilt_y_rad * rad_to_deg) as i32
+        )
+    }
+
+    pub fn tilt_to_spherical(tilt_x: i32, tilt_y: i32) -> (f32, f32) {
+        use std::f32::consts::{PI, TAU};
+        let tilt_x_rad = tilt_x as f32 * PI / 180.0;
+        let tilt_y_rad = tilt_y as f32 * PI / 180.0;
+
+        // calculate azimuth angle
+        let mut azimuth_angle = 0.0;
+
+        if tilt_x == 0 {
+            if tilt_y > 0 {
+                azimuth_angle = PI / 2.0;
+            }
+            else if tilt_y < 0 {
+                azimuth_angle = 3.0 * PI / 2.0;
+            }
+        } else if tilt_y == 0 {
+            if tilt_x < 0 {
+                azimuth_angle = PI;
+            }
+        } else if tilt_x.abs() == 90 || tilt_y.abs() == 90 {
+            // not enough information to calculate azimuth
+            azimuth_angle = 0.0;
+        } else {
+            // Non-boundary case: neither tiltX nor tiltY is equal to 0 or +-90
+            let tan_x = tilt_x_rad.tan();
+            let tan_y = tilt_x_rad.tan();
+
+            azimuth_angle = f32::atan2(tan_y, tan_x);
+            if azimuth_angle < 0.0 {
+                azimuth_angle += TAU;
+            }
+        }
+
+        // calculate altitude angle
+        let altitude_angle = if tilt_x.abs() == 90 || tilt_y.abs() == 90 {
+            0.0
+        } else if tilt_x == 0 {
+            PI / 2.0 - tilt_y_rad.abs()
+        } else if tilt_y == 0 {
+            PI / 2.0 - tilt_x_rad.abs()
+        } else {
+            // Non-boundary case: neither tiltX nor tiltY is equal to 0 or +-90
+            let tan_x = tilt_x_rad.tan();
+            let tan_y = tilt_x_rad.tan();
+            f32::atan(1.0 / (tan_x * tan_x + tan_y * tan_y).sqrt())
+        };
+        (altitude_angle, azimuth_angle)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -23,19 +129,17 @@ pub struct TouchInfo {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MouseInfo {
-    wheel_delta: Vec2,
+    pub wheel_delta: Vec2,
 }
 
 impl Default for PenInfo {
     fn default() -> Self {
         PenInfo {
-            pressure: 0.0, // In the range zero to one, must be 0.5 when in active buttons state for hardware that doesn't support pressure, and 0 otherwise
+            pressure: 0.5, // In the range zero to one, must be 0.5 when in active buttons state for hardware that doesn't support pressure, and 0 otherwise
             tangential_pressure: 0.0,
-            tilt_x: 0,
-            tilt_y: 0,
             twist: 0,
             azimuth_angle: 0.0,
-            altitude_angle: 0.0,
+            altitude_angle: std::f32::consts::PI / 2.0,
         }
     }
 }
@@ -268,7 +372,13 @@ impl std::fmt::Debug for PointerButtons {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PointerEvent {
-    pub timestamp: u64, // Timestamp of the actual event
+    // This is a super-set of mouse events and stylus + touch events.
+    pub pointer_id: u32,
+    pub is_primary: bool,
+    pub pointer_type: PointerType,
+
+    pub timestamp: u32, // Milliseconds of system uptime.  If we record it at the beginning
+    // of the application, we can probably get absolute time as an instant?
     pub pos: Point,
     pub buttons: PointerButtons,
     pub modifiers: Modifiers,
@@ -283,11 +393,6 @@ pub struct PointerEvent {
 
     // TODO: Should this be here, or only in mouse/pen events?
     pub count: u8,
-
-    // This is a super-set of mouse events and stylus + touch events.
-    pub pointer_id: u32,
-    pub is_primary: bool,
-    pub pointer_type: PointerType,
 }
 
 // Do we need a way of getting at maxTouchPoints?
