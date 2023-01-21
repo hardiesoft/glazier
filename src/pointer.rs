@@ -123,7 +123,7 @@ impl PenInfo {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TouchInfo {
     pub contact_geometry: Size,
-    pub pressure: Option<f32>,
+    pub pressure: f32,
     // TODO: Phase?
 }
 
@@ -147,7 +147,7 @@ impl Default for PenInfo {
 impl Default for TouchInfo {
     fn default() -> Self {
         Self {
-            pressure: None, // In the range zero to one, must be 0.5 when in active buttons state for hardware that doesn't support pressure, and 0 otherwise
+            pressure: 0.5, // In the range zero to one, must be 0.5 when in active buttons state for hardware that doesn't support pressure, and 0 otherwise
             contact_geometry: Size::new(1., 1.),
         }
     }

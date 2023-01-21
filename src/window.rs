@@ -675,24 +675,22 @@ pub trait WinHandler {
     #[allow(unused_variables)]
     fn zoom(&mut self, delta: f64) {}
 
-    /// Called when the mouse moves.
-    #[allow(unused_variables)]
-    fn mouse_move(&mut self, event: &MouseEvent) {}
-
     /// Called when a pointer moves.
     #[allow(unused_variables)]
     fn pointer_move(&mut self, event: &PointerEvent) {}
 
-    /// Called on mouse button down.
+    /// Called on pointer button down.
     #[allow(unused_variables)]
-    fn mouse_down(&mut self, event: &MouseEvent) {}
+    fn pointer_down(&mut self, event: &PointerEvent) {}
 
-    /// Called on mouse button up.
+    /// Called on pointer button up.
     #[allow(unused_variables)]
-    fn mouse_up(&mut self, event: &MouseEvent) {}
+    fn pointer_up(&mut self, event: &PointerEvent) {}
 
-    /// Called when the mouse cursor has left the application window
-    fn mouse_leave(&mut self) {}
+    /// Called when a pointer has left the application window
+    fn pointer_leave(&mut self, event: &PointerEvent) {}
+
+    // TODO: Do we need pointer_enter too, if we're dealing with multiple pointers?
 
     /// Called on timer event.
     ///

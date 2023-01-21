@@ -215,16 +215,16 @@ impl WinHandler for WindowState {
         println!("mouse_wheel {event:?}");
     }
 
-    fn mouse_move(&mut self, _event: &MouseEvent) {
+    fn pointer_move(&mut self, _event: &PointerEvent) {
         self.handle.set_cursor(&Cursor::Arrow);
         //println!("mouse_move {event:?}");
     }
 
-    fn mouse_down(&mut self, event: &MouseEvent) {
+    fn pointer_down(&mut self, event: &PointerEvent) {
         println!("mouse_down {event:?}");
     }
 
-    fn mouse_up(&mut self, event: &MouseEvent) {
+    fn pointer_up(&mut self, event: &PointerEvent) {
         println!("mouse_up {event:?}");
     }
 
