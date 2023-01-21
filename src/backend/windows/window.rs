@@ -503,9 +503,10 @@ fn dispatch_pointer_event(hwnd: HWND, msg: UINT, shared_pointer_info: POINTER_IN
                 s.handler.wheel(&event);
             }
             WM_POINTERUPDATE => {
-                // TODO Send pointer move *only* if the pointer position has changed?
                 s.handler.pointer_move(&event);
             }
+
+            // TODO: Down/up should correspond to w3c spec
             WM_POINTERDOWN => {
                 s.handler.pointer_down(&event);
             }
@@ -513,6 +514,7 @@ fn dispatch_pointer_event(hwnd: HWND, msg: UINT, shared_pointer_info: POINTER_IN
                 s.handler.pointer_up(&event);
             }
             WM_POINTERENTER => {
+                // TODO
                 // Can happen with multiple pointers
             }
             WM_POINTERLEAVE => {
