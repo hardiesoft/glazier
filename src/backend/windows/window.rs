@@ -556,17 +556,21 @@ impl WndState {
     fn pointer_event_has_changed(&mut self, event: &PointerEvent) -> bool {
         // Track the previous pointer event for each unique pointer, in order
         // to dedupe events that come in.
-
         let id = event.pointer_id;
         let mut event = event.clone();
         // Timestamp will always change, so don't use it for the comparison.
         event.timestamp = 0;
         // Just use the bits of pointer info that make sense
+        // TODO: use entry api?
         let changed = if let Some(prev_event) = self.prev_pointer_event.get(&id) {
             *prev_event != event
         } else {
             true
         };
+
+        // TODO: Touch and some pen pointers keep increasing, so if the event is a leave event,
+        //  we should remove the pointer_id from the map
+
         if changed {
             self.prev_pointer_event.insert(id, event);
         }
