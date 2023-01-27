@@ -29,7 +29,11 @@ use winapi::um::errhandlingapi::GetLastError;
 use winapi::um::shellscalingapi::PROCESS_PER_MONITOR_DPI_AWARE;
 use winapi::um::winnls::GetUserDefaultLocaleName;
 use winapi::um::winnt::LOCALE_NAME_MAX_LENGTH;
-use winapi::um::winuser::{DispatchMessageW, GetAncestor, GetMessageW, LoadIconW, PeekMessageW, PostMessageW, PostQuitMessage, RegisterClassW, TranslateAcceleratorW, TranslateMessage, GA_ROOT, IDI_APPLICATION, MSG, PM_NOREMOVE, WM_TIMER, WNDCLASSW, EnableMouseInPointer};
+use winapi::um::winuser::{
+    DispatchMessageW, EnableMouseInPointer, GetAncestor, GetMessageW, LoadIconW, PeekMessageW,
+    PostMessageW, PostQuitMessage, RegisterClassW, TranslateAcceleratorW, TranslateMessage,
+    GA_ROOT, IDI_APPLICATION, MSG, PM_NOREMOVE, WM_TIMER, WNDCLASSW,
+};
 
 use crate::application::AppHandler;
 
@@ -103,7 +107,9 @@ impl Application {
 
         // Mouse events are reported as pointer events, allowing us to use unified handlers
         // for all pointer types
-        unsafe { EnableMouseInPointer(TRUE); }
+        unsafe {
+            EnableMouseInPointer(TRUE);
+        }
 
         Ok(())
     }

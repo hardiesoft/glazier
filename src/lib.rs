@@ -75,7 +75,6 @@ mod window;
 pub mod platform;
 pub mod text;
 
-
 pub use application::{AppHandler, Application};
 pub use clipboard::{Clipboard, ClipboardFormat, FormatId};
 pub use common_util::Counter;
@@ -85,7 +84,7 @@ pub use hotkey::{HotKey, RawMods, SysMods};
 pub use keyboard::{Code, IntoKey, KbKey, KeyEvent, KeyState, Location, Modifiers};
 pub use menu::Menu;
 pub use mouse::{Cursor, CursorDesc, MouseButton, MouseButtons, MouseEvent};
-pub use pointer::{PointerEvent, PointerButton, PointerButtons};
+pub use pointer::{PointerButton, PointerButtons, PointerEvent};
 pub use region::Region;
 pub use scale::{Scalable, Scale, ScaledArea};
 pub use screen::{Monitor, Screen};

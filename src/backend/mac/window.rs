@@ -24,10 +24,15 @@ use std::time::Instant;
 #[cfg(feature = "accesskit")]
 use accesskit_macos::Adapter as AccessKitAdapter;
 use block::ConcreteBlock;
-use cocoa::appkit::{CGFloat, NSApp, NSApplication, NSAutoresizingMaskOptions, NSBackingStoreBuffered, NSColor, NSEvent, NSTouchPhase, NSView, NSViewHeightSizable, NSViewWidthSizable, NSWindow, NSWindowStyleMask};
+use cocoa::appkit::{
+    CGFloat, NSApp, NSApplication, NSAutoresizingMaskOptions, NSBackingStoreBuffered, NSColor,
+    NSEvent, NSEventType, NSTouchPhase, NSView, NSViewHeightSizable, NSViewWidthSizable, NSWindow,
+    NSWindowStyleMask,
+};
 use cocoa::base::{id, nil, BOOL, NO, YES};
 use cocoa::foundation::{
-    NSArray, NSAutoreleasePool, NSInteger, NSPoint, NSRect, NSSize, NSString, NSUInteger,
+    NSArray, NSAutoreleasePool, NSInteger, NSPoint, NSRect, NSSize, NSString, NSTimeInterval,
+    NSUInteger,
 };
 use lazy_static::lazy_static;
 use objc::declare::ClassDecl;
@@ -58,6 +63,10 @@ use crate::common_util::IdleCallback;
 use crate::dialog::{FileDialogOptions, FileDialogType};
 use crate::keyboard_types::KeyState;
 use crate::mouse::{Cursor, CursorDesc, MouseButton, MouseButtons, MouseEvent};
+use crate::pointer::{
+    MouseInfo, PenInclination, PenInfo, PointerButton, PointerButtons, PointerEvent, PointerType,
+    TouchInfo,
+};
 use crate::region::Region;
 use crate::scale::Scale;
 use crate::text::{Event, InputHandler};
@@ -65,7 +74,6 @@ use crate::window::{
     FileDialogToken, IdleToken, TextFieldToken, TimerToken, WinHandler, WindowLevel, WindowState,
 };
 use crate::Error;
-use crate::pointer::{PointerButton, PointerButtons, PointerEvent, PointerType, TouchInfo};
 
 #[allow(non_upper_case_globals)]
 const NSWindowDidBecomeKeyNotification: &str = "NSWindowDidBecomeKeyNotification";
@@ -344,7 +352,7 @@ impl WindowBuilder {
             println!("Add touch event support");
 
             let superclass = msg_send![view, superclass];
-            let _: id = msg_send![super(view, superclass), setAcceptsTouchEvents:YES];
+            let _: id = msg_send![super(view, superclass), setAcceptsTouchEvents: YES];
 
             // set_window_state above could have invalidated the frame size
             let frame = NSView::frame(content_view);
@@ -432,35 +440,35 @@ lazy_static! {
         );
         decl.add_method(
             sel!(mouseUp:),
-            mouse_up_left as extern "C" fn(&mut Object, Sel, id),
+            pointer_up_left as extern "C" fn(&mut Object, Sel, id),
         );
         decl.add_method(
             sel!(rightMouseUp:),
-            mouse_up_right as extern "C" fn(&mut Object, Sel, id),
+            pointer_up_right as extern "C" fn(&mut Object, Sel, id),
         );
         decl.add_method(
             sel!(otherMouseUp:),
-            mouse_up_other as extern "C" fn(&mut Object, Sel, id),
+            pointer_up_other as extern "C" fn(&mut Object, Sel, id),
         );
         decl.add_method(
             sel!(mouseMoved:),
-            mouse_move as extern "C" fn(&mut Object, Sel, id),
+            pointer_move as extern "C" fn(&mut Object, Sel, id),
         );
         decl.add_method(
             sel!(mouseDragged:),
-            mouse_move as extern "C" fn(&mut Object, Sel, id),
+            pointer_move as extern "C" fn(&mut Object, Sel, id),
         );
         decl.add_method(
             sel!(otherMouseDragged:),
-            mouse_move as extern "C" fn(&mut Object, Sel, id),
+            pointer_move as extern "C" fn(&mut Object, Sel, id),
         );
         decl.add_method(
             sel!(mouseEntered:),
-            mouse_enter as extern "C" fn(&mut Object, Sel, id),
+            pointer_enter as extern "C" fn(&mut Object, Sel, id),
         );
         decl.add_method(
             sel!(mouseExited:),
-            mouse_leave as extern "C" fn(&mut Object, Sel, id),
+            pointer_leave as extern "C" fn(&mut Object, Sel, id),
         );
         decl.add_method(
             sel!(scrollWheel:),
@@ -657,8 +665,6 @@ fn make_view(handler: Box<dyn WinHandler>) -> (id, Weak<Mutex<Vec<IdleKind>>>) {
         let options: NSAutoresizingMaskOptions = NSViewWidthSizable | NSViewHeightSizable;
         view.setAutoresizingMask_(options);
 
-
-
         (view.autorelease(), queue_handle)
     }
 }
@@ -692,10 +698,7 @@ extern "C" fn set_frame_size(this: &mut Object, _: Sel, size: NSSize) {
     }
 }
 //
-fn touch_event(nsevent: id,
-                 view: id,
-                 count: u8,
-                 focus: bool) -> PointerEvent {
+fn touch_event(nsevent: id, view: id, count: u8, focus: bool) -> PointerEvent {
     unsafe {
         let point = nsevent.locationInWindow();
         let view_point = view.convertPoint_fromView_(point, nil);
@@ -713,7 +716,7 @@ fn touch_event(nsevent: id,
             modifiers,
             pointer_type: PointerType::Touch(TouchInfo {
                 contact_geometry: Size::ZERO, // TODO
-                pressure: None
+                pressure: 0.5,
             }),
         }
     }
@@ -725,37 +728,92 @@ enum NSEventSubtypeMouse {
     NX_SUBTYPE_DEFAULT = 0,
     NX_SUBTYPE_TABLET_POINT = 1,
     NX_SUBTYPE_TABLET_PROXIMITY = 2,
-    NX_SUBTYPE_MOUSE_TOUCH= 3,
+    NX_SUBTYPE_MOUSE_TOUCH = 3,
 }
 
-fn mouse_event(
+fn pointer_event(
     nsevent: id,
     view: id,
     count: u8,
     focus: bool,
     button: MouseButton,
     wheel_delta: Vec2,
-) -> MouseEvent {
+) -> PointerEvent {
     unsafe {
-
         let event_type = nsevent.eventType();
+
+        // So, the events generated from the trackpad between the beginGesture and endGesture events
+        // returns a value other than NSEventPhaseNone for -[NSEvent phase] and the trackpad events
+        // that are generated after the endGesture event returns a value other than
+        // NSEventPhaseNone for -[NSEvent momentumPhase]. The code is below,
+        // Or can use event hasPreciseScrollingDeltas?
+        // TODO - Also check against magic mouse touch scroll events.
         println!("Event type {:?}", event_type);
-        let st: i16 = msg_send![nsevent, subtype];
-        let sub_type:NSEventSubtypeMouse = msg_send![nsevent, subtype];
+
         let device_id: u32 = msg_send![nsevent, deviceID];
-        println!("ID {}", device_id);
-        match sub_type {
-            NSEventSubtypeMouse::NX_SUBTYPE_MOUSE_TOUCH => println!("Touch event"),
-            NSEventSubtypeMouse::NX_SUBTYPE_DEFAULT => println!("Mouse event"),
-            NSEventSubtypeMouse::NX_SUBTYPE_TABLET_POINT => {
-                let pressure:f32 = msg_send![nsevent, pressure];
-                let tilt:NSPoint = msg_send![nsevent, tilt];
-                let rotation:f32 = msg_send![nsevent, rotation];
-                let tangentialPressure:f32 = msg_send![nsevent, tangentialPressure];
-                println!("Tablet point, pressure: {}, tangentialPressure: {}, tilt: ({}, {}), rotation: {}", pressure, tangentialPressure, tilt.x, tilt.y, rotation);
-            },
-            NSEventSubtypeMouse::NX_SUBTYPE_TABLET_PROXIMITY => println!("Tablet proximity"),
-        }
+        //let unique_id: u32 = msg_send![nsevent, uniqueID];
+        //let pointing_device_id: u32 = msg_send![nsevent, pointingDeviceID];
+        let timestamp: NSTimeInterval = msg_send![nsevent, timestamp];
+
+        // TODO NSMouseExited doesn't work
+        // | NSEventType::NSMouseEntered
+        // | NSEventType::NSMouseExited
+
+        println!("device ID {device_id}, {wheel_delta}");
+        let pointer_type = match event_type {
+            NSEventType::NSMouseEntered
+            | NSEventType::NSMouseExited => {
+                PointerType::Mouse(MouseInfo { wheel_delta })
+            }
+            // Need to make sure the event-type is mouse, before we try to get the subtype.
+            NSEventType::NSLeftMouseDown
+            | NSEventType::NSLeftMouseUp
+            | NSEventType::NSRightMouseDown
+            | NSEventType::NSRightMouseUp
+            | NSEventType::NSMouseMoved
+            | NSEventType::NSLeftMouseDragged
+            | NSEventType::NSRightMouseDragged
+            | NSEventType::NSOtherMouseUp
+            | NSEventType::NSOtherMouseDown
+            | NSEventType::NSOtherMouseDragged
+            => {
+                println!("Type {:?}", event_type);
+                let sub_type: NSEventSubtypeMouse = msg_send![nsevent, subtype];
+                // TODO: Getting subtype fails on NSMouseEntered
+                match sub_type {
+                    // NSEventSubtypeMouse::NX_SUBTYPE_MOUSE_TOUCH => println!("Touch event"),
+                    NSEventSubtypeMouse::NX_SUBTYPE_DEFAULT
+                    | NSEventSubtypeMouse::NX_SUBTYPE_MOUSE_TOUCH => {
+                        // NOTE: Treat trackpad events as mouse events
+                        PointerType::Mouse(MouseInfo { wheel_delta })
+                    }
+                    NSEventSubtypeMouse::NX_SUBTYPE_TABLET_POINT => {
+                        println!("Tablet point event?!?");
+                        let pressure: f32 = msg_send![nsevent, pressure];
+                        let tilt: NSPoint = msg_send![nsevent, tilt];
+                        let rotation: f32 = msg_send![nsevent, rotation];
+                        let tangential_pressure: f32 = msg_send![nsevent, tangentialPressure];
+                        println!("Tablet point, pressure: {pressure}, tangential_pressure: {tangential_pressure}, tilt: ({}, {}), rotation: {rotation}", tilt.x, tilt.y);
+                        PointerType::Pen(PenInfo {
+                            pressure,
+                            inclination: PenInclination::from_tilt(
+                                (tilt.x * 90.0) as i32,
+                                (tilt.y * 90.0) as i32,
+                            ),
+                            tangential_pressure,
+                            twist: rotation as u16,
+                        })
+                    }
+                    NSEventSubtypeMouse::NX_SUBTYPE_TABLET_PROXIMITY => {
+                        println!("Tablet proximity");
+                        panic!("Really?")
+                    }
+                }
+            }
+            NSEventType::NSScrollWheel => PointerType::Mouse(MouseInfo { wheel_delta }),
+            _ => unreachable!("Unexpected event type"),
+        };
+        println!("{}", timestamp);
         // NOTE: My Huion tablet doesn't generate tablet proximity events, just regular mouse entered events
         //  - However, the device id of the tablet seems to be stable (though not guaranteed according to macos docs) as of 12.6.2
         //  As such, once we've seen the tablet once, we should be able to generate fake proximity events when the pen enters/leaves again.
@@ -764,16 +822,24 @@ fn mouse_event(
         let point = nsevent.locationInWindow();
         let view_point = view.convertPoint_fromView_(point, nil);
         let pos = Point::new(view_point.x, view_point.y);
-        let buttons = get_mouse_buttons(NSEvent::pressedMouseButtons(nsevent));
+
+        // FIXME: pressedMouseButtons gets *currently* pressed mouse buttons when the event is processed, NOT
+        //  at the time the event was created.  Would be better to track buttons via up/down events, and
+        //  the event.button property. This also doesn't distinguish between different buttons across separate physical pointing devices - but then neither
+        //  does the web?  Or is that just because they're reporting the same pointer id for mouse and trackpad.  Defer decision making on this.
+        let buttons = get_pointer_buttons(NSEvent::pressedMouseButtons(nsevent));
         let modifiers = make_modifiers(nsevent.modifierFlags());
-        MouseEvent {
+        PointerEvent {
+            timestamp: (timestamp * 1_000_000.0) as u32, // Microsecond resolution timestamp
+            pointer_id: device_id,
+            pointer_type,
+            is_primary: true, // All pointer events on MacOS are primary, since there are no real direct touch events
             pos,
             buttons,
-            mods: modifiers,
+            modifiers,
             count,
             focus,
-            button,
-            wheel_delta,
+            button: PointerButton::None,
         }
     }
 }
@@ -789,70 +855,70 @@ fn get_mouse_button(button: NSInteger) -> Option<MouseButton> {
     }
 }
 
-fn get_mouse_buttons(mask: NSUInteger) -> MouseButtons {
-    let mut buttons = MouseButtons::new();
+fn get_pointer_buttons(mask: NSUInteger) -> PointerButtons {
+    let mut buttons = PointerButtons::new();
     if mask & 1 != 0 {
-        buttons.insert(MouseButton::Left);
+        buttons.insert(PointerButton::Left);
     }
     if mask & 1 << 1 != 0 {
-        buttons.insert(MouseButton::Right);
+        buttons.insert(PointerButton::Right);
     }
     if mask & 1 << 2 != 0 {
-        buttons.insert(MouseButton::Middle);
+        buttons.insert(PointerButton::Middle);
     }
     if mask & 1 << 3 != 0 {
-        buttons.insert(MouseButton::X1);
+        buttons.insert(PointerButton::X1);
     }
     if mask & 1 << 4 != 0 {
-        buttons.insert(MouseButton::X2);
+        buttons.insert(PointerButton::X2);
     }
     buttons
 }
 
 extern "C" fn mouse_down_left(this: &mut Object, _: Sel, nsevent: id) {
-    mouse_down(this, nsevent, MouseButton::Left);
+    pointer_down(this, nsevent, MouseButton::Left);
 }
 
 extern "C" fn mouse_down_right(this: &mut Object, _: Sel, nsevent: id) {
-    mouse_down(this, nsevent, MouseButton::Right);
+    pointer_down(this, nsevent, MouseButton::Right);
 }
 
 extern "C" fn mouse_down_other(this: &mut Object, _: Sel, nsevent: id) {
     unsafe {
         if let Some(button) = get_mouse_button(nsevent.buttonNumber()) {
-            mouse_down(this, nsevent, button);
+            pointer_down(this, nsevent, button);
         }
     }
 }
 
-fn mouse_down(this: &mut Object, nsevent: id, button: MouseButton) {
+fn pointer_down(this: &mut Object, nsevent: id, button: MouseButton) {
     unsafe {
         let view_state: *mut c_void = *this.get_ivar("viewState");
         let view_state = &mut *(view_state as *mut ViewState);
         let count = nsevent.clickCount() as u8;
         let focus = view_state.focus_click && button == MouseButton::Left;
-        let event = mouse_event(nsevent, this as id, count, focus, button, Vec2::ZERO);
-        view_state.handler.mouse_down(&event);
+        let event = pointer_event(nsevent, this as id, count, focus, button, Vec2::ZERO);
+        view_state.handler.pointer_down(&event);
     }
 }
 
-extern "C" fn mouse_up_left(this: &mut Object, _: Sel, nsevent: id) {
-    mouse_up(this, nsevent, MouseButton::Left);
+extern "C" fn pointer_up_left(this: &mut Object, _: Sel, nsevent: id) {
+    pointer_up(this, nsevent, MouseButton::Left);
 }
 
-extern "C" fn mouse_up_right(this: &mut Object, _: Sel, nsevent: id) {
-    mouse_up(this, nsevent, MouseButton::Right);
+extern "C" fn pointer_up_right(this: &mut Object, _: Sel, nsevent: id) {
+    pointer_up(this, nsevent, MouseButton::Right);
 }
 
-extern "C" fn mouse_up_other(this: &mut Object, _: Sel, nsevent: id) {
+extern "C" fn pointer_up_other(this: &mut Object, _: Sel, nsevent: id) {
     unsafe {
         if let Some(button) = get_mouse_button(nsevent.buttonNumber()) {
-            mouse_up(this, nsevent, button);
+            pointer_up(this, nsevent, button);
         }
     }
 }
 
-fn mouse_up(this: &mut Object, nsevent: id, button: MouseButton) {
+fn pointer_up(this: &mut Object, nsevent: id, button: MouseButton) {
     unsafe {
         let view_state: *mut c_void = *this.get_ivar("viewState");
         let view_state = &mut *(view_state as *mut ViewState);
@@ -862,45 +928,47 @@ fn mouse_up(this: &mut Object, nsevent: id, button: MouseButton) {
         } else {
             false
         };
-        let event = mouse_event(nsevent, this as id, 0, focus, button, Vec2::ZERO);
-        view_state.handler.mouse_up(&event);
+        let event = pointer_event(nsevent, this as id, 0, focus, button, Vec2::ZERO);
+        view_state.handler.pointer_up(&event);
         // If we have already received a mouseExited event then that means
         // we're still receiving mouse events because some buttons are being held down.
         // When the last held button is released and we haven't received a mouseEntered event,
         // then we will no longer receive mouse events until the next mouseEntered event
         // and need to inform the handler of the mouse leaving.
         if view_state.mouse_left && event.buttons.is_empty() {
-            view_state.handler.mouse_leave();
+            view_state.handler.pointer_leave(&event);
         }
     }
 }
 
-extern "C" fn mouse_move(this: &mut Object, _: Sel, nsevent: id) {
+extern "C" fn pointer_move(this: &mut Object, _: Sel, nsevent: id) {
     unsafe {
         let view_state: *mut c_void = *this.get_ivar("viewState");
         let view_state = &mut *(view_state as *mut ViewState);
 
-        let event = mouse_event(nsevent, this as id, 0, false, MouseButton::None, Vec2::ZERO);
-        view_state.handler.mouse_move(&event);
+        let event = pointer_event(nsevent, this as id, 0, false, MouseButton::None, Vec2::ZERO);
+        view_state.handler.pointer_move(&event);
     }
 }
 
-extern "C" fn mouse_enter(this: &mut Object, _sel: Sel, nsevent: id) {
+extern "C" fn pointer_enter(this: &mut Object, _sel: Sel, nsevent: id) {
     unsafe {
         let view_state: *mut c_void = *this.get_ivar("viewState");
         let view_state = &mut *(view_state as *mut ViewState);
         view_state.mouse_left = false;
-        let event = mouse_event(nsevent, this, 0, false, MouseButton::None, Vec2::ZERO);
-        view_state.handler.mouse_move(&event);
+        let event = pointer_event(nsevent, this, 0, false, MouseButton::None, Vec2::ZERO);
+        view_state.handler.pointer_move(&event);
     }
 }
 
-extern "C" fn mouse_leave(this: &mut Object, _: Sel, _nsevent: id) {
+extern "C" fn pointer_leave(this: &mut Object, _: Sel, _nsevent: id) {
     unsafe {
         let view_state: *mut c_void = *this.get_ivar("viewState");
         let view_state = &mut *(view_state as *mut ViewState);
         view_state.mouse_left = true;
-        view_state.handler.mouse_leave();
+
+        // TODO: Enable
+        //view_state.handler.pointer_leave();
     }
 }
 
@@ -914,11 +982,12 @@ extern "C" fn scroll_wheel(this: &mut Object, _: Sel, nsevent: id) {
             if nsevent.hasPreciseScrollingDeltas() == cocoa::base::YES {
                 (dx, dy)
             } else {
+                // TODO: Check system scroll sensitivity?
                 (dx * 32.0, dy * 32.0)
             }
         };
 
-        let event = mouse_event(
+        let event = pointer_event(
             nsevent,
             this as id,
             0,
@@ -946,16 +1015,17 @@ extern "C" fn touch_moved(this: &mut Object, _: Sel, nsevent: id) {
     unsafe {
         let view_state: *mut c_void = *this.get_ivar("viewState");
         let view_state = &mut *(view_state as *mut ViewState);
-        let touches = nsevent.touchesMatchingPhase_inView_(NSTouchPhase::NSTouchPhaseTouching, this as id);
+        let touches =
+            nsevent.touchesMatchingPhase_inView_(NSTouchPhase::NSTouchPhaseTouching, this as id);
 
         let touches_arr: id = msg_send![touches, allObjects];
         for i in 0..touches_arr.count() {
-            let touch: id = msg_send![touches_arr, objectAtIndex:i];
+            let touch: id = msg_send![touches_arr, objectAtIndex: i];
             let pos: NSPoint = msg_send![touch, normalizedPosition];
             let touch_type: NSInteger = msg_send![touch, type];
             //println!("Touch ({}, {}), type {}", pos.x, pos.y, touch_type);
             if touch_type != 1 {
-                // NOTE locationInView only works for direct touchs on touch-screens, not for trackpads.
+                // NOTE locationInView only works for direct touches on touch-screens, not for trackpads.
                 let loc: NSPoint = msg_send![touch, locationInView: this as id];
                 //println!("Touch ({}, {}), ({}, {})", pos.x, pos.y, loc.x, loc.y);
             }

@@ -1,10 +1,12 @@
 use glazier::kurbo::Size;
-use glazier::{Application, Cursor, FileDialogToken, FileInfo, IdleToken, KeyEvent, MouseEvent, PointerEvent, Region, Scalable, TimerToken, WinHandler, WindowHandle, Modifiers};
+use glazier::{
+    Application, Cursor, FileDialogToken, FileInfo, IdleToken, KeyEvent, Modifiers, MouseEvent,
+    PointerEvent, Region, Scalable, TimerToken, WinHandler, WindowHandle,
+};
+use keyboard_types::{Code, KeyState};
 use parley::{FontContext, Layout};
 use std::any::Any;
-use keyboard_types::{Code, KeyState};
 use vello::util::{RenderContext, RenderSurface};
-use vello::{Renderer, SceneFragment};
 use vello::{
     glyph::{
         pinot::{types::Tag, FontRef},
@@ -14,6 +16,7 @@ use vello::{
     peniko::{Brush, Color, Fill, Mix, Stroke},
     Scene, SceneBuilder,
 };
+use vello::{Renderer, SceneFragment};
 
 const WIDTH: usize = 2048;
 const HEIGHT: usize = 1536;
@@ -54,7 +57,7 @@ impl WindowState {
             font_context: FontContext::new(),
             counter: 0,
             size: Size::new(800.0, 600.0),
-            retained_shapes: Vec::new()
+            retained_shapes: Vec::new(),
         }
     }
 
@@ -97,7 +100,9 @@ impl WindowState {
                 lcx.ranged_builder(fcx, "Hello vello! ഹലോ ਸਤ ਸ੍ਰੀ ਅਕਾਲ مرحبا!", 1.0);
             layout_builder.push_default(&parley::style::StyleProperty::FontSize(34.0));
             layout_builder.push(
-                &parley::style::StyleProperty::Brush(ParleyBrush(Brush::Solid(Color::rgb8(255, 255, 0)))),
+                &parley::style::StyleProperty::Brush(ParleyBrush(Brush::Solid(Color::rgb8(
+                    255, 255, 0,
+                )))),
                 6..10,
             );
             layout_builder.push(&parley::style::StyleProperty::FontSize(48.0), 6..12);
@@ -130,7 +135,8 @@ impl WindowState {
                     for glyph in glyph_run.glyphs() {
                         if let Some(fragment) = gp.get(glyph.id, Some(&style.brush.0)) {
                             let gx = x + glyph.x;
-                            let xform = Affine::translate((gx as f64, 0.0)) * Affine::scale_non_uniform(1.0, -1.0);
+                            let xform = Affine::translate((gx as f64, 0.0))
+                                * Affine::scale_non_uniform(1.0, -1.0);
                             glyphs.push((fragment, xform));
                         }
                         x += glyph.advance;
@@ -191,11 +197,16 @@ impl WinHandler for WindowState {
         println!("keydown: {event:?}");
         match event {
             // Handle cmd-q/ctrl-q to quit.
-            KeyEvent { code: Code::KeyQ, state: KeyState::Down, mods, .. } => {
+            KeyEvent {
+                code: Code::KeyQ,
+                state: KeyState::Down,
+                mods,
+                ..
+            } => {
                 if mods.contains(Modifiers::META) {
                     self.request_close()
                 }
-            },
+            }
             _ => {}
         }
         false
@@ -204,9 +215,11 @@ impl WinHandler for WindowState {
     fn key_up(&mut self, event: KeyEvent) {
         println!("keyup: {event:?}");
         match event {
-            KeyEvent { code: Code::Escape, state: KeyState::Up, .. } => {
-                self.request_close()
-            },
+            KeyEvent {
+                code: Code::Escape,
+                state: KeyState::Up,
+                ..
+            } => self.request_close(),
             _ => {}
         }
     }
@@ -217,7 +230,7 @@ impl WinHandler for WindowState {
 
     fn pointer_move(&mut self, event: &PointerEvent) {
         self.handle.set_cursor(&Cursor::Arrow);
-        println!("mouse_move {event:?}");
+        //println!("mouse_move {event:?}");
     }
 
     fn pointer_down(&mut self, event: &PointerEvent) {
@@ -274,7 +287,12 @@ impl PartialEq<ParleyBrush> for ParleyBrush {
 
 impl parley::style::Brush for ParleyBrush {}
 
-pub fn render_text(builder: &mut SceneBuilder, transform: Affine, scale: f64, layout: &Layout<ParleyBrush>) {
+pub fn render_text(
+    builder: &mut SceneBuilder,
+    transform: Affine,
+    scale: f64,
+    layout: &Layout<ParleyBrush>,
+) {
     let mut gcx = GlyphContext::new();
     let transform = transform * Affine::scale(scale);
     for line in layout.lines() {
@@ -305,7 +323,11 @@ pub fn render_text(builder: &mut SceneBuilder, transform: Affine, scale: f64, la
     }
 }
 
-pub fn render_anim_frame(scene: &mut Scene, retained_shapes: &Vec<(SceneFragment, Affine)>, i: u64) {
+pub fn render_anim_frame(
+    scene: &mut Scene,
+    retained_shapes: &Vec<(SceneFragment, Affine)>,
+    i: u64,
+) {
     let mut sb = SceneBuilder::for_scene(scene);
     let rect = Rect::from_origin_size(Point::new(0.0, 0.0), (1000.0, 1000.0));
     sb.fill(
@@ -320,7 +342,10 @@ pub fn render_anim_frame(scene: &mut Scene, retained_shapes: &Vec<(SceneFragment
 
     // Scale the whole layer/group
     for (glyph, transform) in retained_shapes {
-        sb.append(glyph, Some(Affine::translate((100.0, 448.0)) * Affine::scale(scale) * *transform));
+        sb.append(
+            glyph,
+            Some(Affine::translate((100.0, 448.0)) * Affine::scale(scale) * *transform),
+        );
     }
     //render_text(&mut sb, Affine::translate((100.0, 448.0)), scale, &layout);
 

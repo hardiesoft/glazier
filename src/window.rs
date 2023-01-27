@@ -30,10 +30,10 @@ use crate::region::Region;
 use crate::scale::Scale;
 use crate::text::{Event, InputHandler};
 
+use crate::pointer::PointerEvent;
 use raw_window_handle::{
     HasRawDisplayHandle, HasRawWindowHandle, RawDisplayHandle, RawWindowHandle,
 };
-use crate::pointer::PointerEvent;
 
 /// A token that uniquely identifies a running timer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Hash)]

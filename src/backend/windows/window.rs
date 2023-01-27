@@ -65,14 +65,16 @@ use crate::dialog::{FileDialogOptions, FileDialogType, FileInfo};
 use crate::error::Error as ShellError;
 use crate::keyboard::{KbKey, KeyState};
 use crate::mouse::{Cursor, CursorDesc, MouseButton, MouseButtons, MouseEvent};
-use crate::pointer::{MouseInfo, PenInfo, PointerButton, PointerButtons, PointerEvent, PointerType, TouchInfo};
+use crate::pointer::{
+    MouseInfo, PenInfo, PointerButton, PointerButtons, PointerEvent, PointerType, TouchInfo,
+};
 use crate::region::Region;
 use crate::scale::{Scalable, Scale, ScaledArea};
 use crate::text::{simulate_input, Event};
-use crate::{Modifiers, window};
 use crate::window::{
     FileDialogToken, IdleToken, TextFieldToken, TimerToken, WinHandler, WindowLevel,
 };
+use crate::{window, Modifiers};
 
 /// The backend target DPI.
 ///
@@ -289,7 +291,7 @@ struct WndState {
     click_count: u8,
 
     // Track pointer event changes for deduplication purposes
-    prev_pointer_event: HashMap<u32, PointerEvent>
+    prev_pointer_event: HashMap<u32, PointerEvent>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -347,8 +349,6 @@ fn get_buttons(wparam: WPARAM) -> MouseButtons {
     }
     buttons
 }
-
-
 
 fn is_point_in_client_rect(hwnd: HWND, x: i32, y: i32) -> bool {
     unsafe {
@@ -417,26 +417,49 @@ fn set_style(hwnd: HWND, resizable: bool, titlebar: bool) {
     }
 }
 
-fn dispatch_pointer_event(hwnd: HWND, msg: UINT, shared_pointer_info: POINTER_INFO, s: &mut WndState, pointer_type: PointerType, scale: Scale, modifiers: Modifiers) -> bool {
+fn dispatch_pointer_event(
+    hwnd: HWND,
+    msg: UINT,
+    shared_pointer_info: POINTER_INFO,
+    s: &mut WndState,
+    pointer_type: PointerType,
+    scale: Scale,
+    modifiers: Modifiers,
+) -> bool {
     let mut buttons = PointerButtons::new();
     let is_pointer_new = shared_pointer_info.pointerFlags & POINTER_FLAG_NEW == POINTER_FLAG_NEW;
-    let is_pointer_in_range = shared_pointer_info.pointerFlags & POINTER_FLAG_INRANGE == POINTER_FLAG_INRANGE;
-    let is_pointer_in_contact = shared_pointer_info.pointerFlags & POINTER_FLAG_INCONTACT == POINTER_FLAG_INCONTACT;
-    let is_pointer_first_button = shared_pointer_info.pointerFlags & POINTER_FLAG_FIRSTBUTTON == POINTER_FLAG_FIRSTBUTTON;
-    let is_pointer_second_button = shared_pointer_info.pointerFlags & POINTER_FLAG_SECONDBUTTON == POINTER_FLAG_SECONDBUTTON;
-    let is_pointer_third_button = shared_pointer_info.pointerFlags & POINTER_FLAG_THIRDBUTTON == POINTER_FLAG_THIRDBUTTON;
-    let is_pointer_fourth_button = shared_pointer_info.pointerFlags & POINTER_FLAG_FOURTHBUTTON == POINTER_FLAG_FOURTHBUTTON;
-    let is_pointer_fifth_button = shared_pointer_info.pointerFlags & POINTER_FLAG_FIFTHBUTTON == POINTER_FLAG_FIFTHBUTTON;
-    let is_pointer_primary = shared_pointer_info.pointerFlags & POINTER_FLAG_PRIMARY == POINTER_FLAG_PRIMARY;
-    let has_pointer_confidence = shared_pointer_info.pointerFlags & POINTER_FLAG_CONFIDENCE == POINTER_FLAG_CONFIDENCE;
-    let is_pointer_canceled = shared_pointer_info.pointerFlags & POINTER_FLAG_CANCELED == POINTER_FLAG_CANCELED;
+    let is_pointer_in_range =
+        shared_pointer_info.pointerFlags & POINTER_FLAG_INRANGE == POINTER_FLAG_INRANGE;
+    let is_pointer_in_contact =
+        shared_pointer_info.pointerFlags & POINTER_FLAG_INCONTACT == POINTER_FLAG_INCONTACT;
+    let is_pointer_first_button =
+        shared_pointer_info.pointerFlags & POINTER_FLAG_FIRSTBUTTON == POINTER_FLAG_FIRSTBUTTON;
+    let is_pointer_second_button =
+        shared_pointer_info.pointerFlags & POINTER_FLAG_SECONDBUTTON == POINTER_FLAG_SECONDBUTTON;
+    let is_pointer_third_button =
+        shared_pointer_info.pointerFlags & POINTER_FLAG_THIRDBUTTON == POINTER_FLAG_THIRDBUTTON;
+    let is_pointer_fourth_button =
+        shared_pointer_info.pointerFlags & POINTER_FLAG_FOURTHBUTTON == POINTER_FLAG_FOURTHBUTTON;
+    let is_pointer_fifth_button =
+        shared_pointer_info.pointerFlags & POINTER_FLAG_FIFTHBUTTON == POINTER_FLAG_FIFTHBUTTON;
+    let is_pointer_primary =
+        shared_pointer_info.pointerFlags & POINTER_FLAG_PRIMARY == POINTER_FLAG_PRIMARY;
+    let has_pointer_confidence =
+        shared_pointer_info.pointerFlags & POINTER_FLAG_CONFIDENCE == POINTER_FLAG_CONFIDENCE;
+    let is_pointer_canceled =
+        shared_pointer_info.pointerFlags & POINTER_FLAG_CANCELED == POINTER_FLAG_CANCELED;
     let is_pointer_down = shared_pointer_info.pointerFlags & POINTER_FLAG_DOWN == POINTER_FLAG_DOWN;
-    let is_pointer_update = shared_pointer_info.pointerFlags & POINTER_FLAG_UPDATE == POINTER_FLAG_UPDATE;
+    let is_pointer_update =
+        shared_pointer_info.pointerFlags & POINTER_FLAG_UPDATE == POINTER_FLAG_UPDATE;
     let is_pointer_up = shared_pointer_info.pointerFlags & POINTER_FLAG_UP == POINTER_FLAG_UP;
-    let is_pointer_wheel = shared_pointer_info.pointerFlags & POINTER_FLAG_WHEEL == POINTER_FLAG_WHEEL;
-    let is_pointer_hwheel = shared_pointer_info.pointerFlags & POINTER_FLAG_HWHEEL == POINTER_FLAG_HWHEEL;
-    let is_pointer_capture_changed = shared_pointer_info.pointerFlags & POINTER_FLAG_CAPTURECHANGED == POINTER_FLAG_CAPTURECHANGED;
-    let is_pointer_has_transform = shared_pointer_info.pointerFlags & POINTER_FLAG_HASTRANSFORM == POINTER_FLAG_HASTRANSFORM;
+    let is_pointer_wheel =
+        shared_pointer_info.pointerFlags & POINTER_FLAG_WHEEL == POINTER_FLAG_WHEEL;
+    let is_pointer_hwheel =
+        shared_pointer_info.pointerFlags & POINTER_FLAG_HWHEEL == POINTER_FLAG_HWHEEL;
+    let is_pointer_capture_changed = shared_pointer_info.pointerFlags & POINTER_FLAG_CAPTURECHANGED
+        == POINTER_FLAG_CAPTURECHANGED;
+    let is_pointer_has_transform =
+        shared_pointer_info.pointerFlags & POINTER_FLAG_HASTRANSFORM == POINTER_FLAG_HASTRANSFORM;
     if is_pointer_first_button {
         buttons.insert(PointerButton::Left);
     }
@@ -482,8 +505,11 @@ fn dispatch_pointer_event(hwnd: HWND, msg: UINT, shared_pointer_info: POINTER_IN
         POINTER_CHANGE_FOURTHBUTTON_UP => PointerButton::None,
         POINTER_CHANGE_FIFTHBUTTON_DOWN => PointerButton::X2,
         POINTER_CHANGE_FIFTHBUTTON_UP => PointerButton::None,
-        _ => unreachable!("Unknown button state change")
+        _ => unreachable!("Unknown button state change"),
     };
+
+    // Get timestamp in microseconds from performanceCount
+
     // TODO - Handle buttons changed
     let mut event = PointerEvent {
         timestamp: shared_pointer_info.dwTime,
@@ -505,7 +531,6 @@ fn dispatch_pointer_event(hwnd: HWND, msg: UINT, shared_pointer_info: POINTER_IN
             WM_POINTERUPDATE => {
                 s.handler.pointer_move(&event);
             }
-
             // TODO: Down/up should correspond to w3c spec
             WM_POINTERDOWN => {
                 s.handler.pointer_down(&event);
@@ -527,7 +552,7 @@ fn dispatch_pointer_event(hwnd: HWND, msg: UINT, shared_pointer_info: POINTER_IN
             WM_POINTERDEVICEINRANGE | WM_POINTERDEVICEOUTOFRANGE => {
                 // TODO - see if we can trigger this
             }
-            _ => unreachable!()
+            _ => unreachable!(),
         }
     }
     true
@@ -812,7 +837,7 @@ impl WndProc for MyWndProc {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> Option<LRESULT> {
-      //  println!("wndproc msg: {:#x}", msg);
+        //  println!("wndproc msg: {:#x}", msg);
         match msg {
             WM_CREATE => {
                 // Only supported on Windows 10, Could remove this as the 8.1 version below also works on 10..
@@ -1085,12 +1110,19 @@ impl WndProc for MyWndProc {
                     }
                 }
             }
-            WM_POINTERUPDATE | WM_POINTERUP | WM_POINTERDOWN | WM_POINTERACTIVATE |
-            WM_POINTERCAPTURECHANGED | WM_POINTERDEVICEINRANGE | WM_POINTERDEVICEOUTOFRANGE |
-            WM_POINTERDEVICECHANGE | WM_POINTERWHEEL | WM_POINTERHWHEEL | WM_POINTERENTER |
-            WM_POINTERLEAVE => {
+            WM_POINTERUPDATE
+            | WM_POINTERUP
+            | WM_POINTERDOWN
+            | WM_POINTERACTIVATE
+            | WM_POINTERCAPTURECHANGED
+            | WM_POINTERDEVICEINRANGE
+            | WM_POINTERDEVICEOUTOFRANGE
+            | WM_POINTERDEVICECHANGE
+            | WM_POINTERWHEEL
+            | WM_POINTERHWHEEL
+            | WM_POINTERENTER
+            | WM_POINTERLEAVE => {
                 let handled = self.with_wnd_state(|s| {
-
                     let mut modifiers = s.keyboard_state.get_modifiers();
 
                     // TODO: Use shift+ctrl mods from event, as they may be more timely.
@@ -1103,7 +1135,7 @@ impl WndProc for MyWndProc {
                     // timestamp
                     // Button change type
                     let pointer_id = LOWORD(wparam as u32) as u32;
-                    let mut pointer_type =  0;
+                    let mut pointer_type = 0;
                     unsafe { GetPointerType(pointer_id, &mut pointer_type) };
                     // TODO: Dedupe repeated identical pointer events.
                     //  For this we need to have a previous pointer event per device_id
@@ -1114,49 +1146,74 @@ impl WndProc for MyWndProc {
                     match pointer_type {
                         PT_MOUSE | PT_TOUCHPAD => {
                             let mut count: u32 = 5;
-                            let mut info: [POINTER_INFO;5] = [POINTER_INFO::default();5];
-                            if unsafe { GetPointerInfoHistory(pointer_id,&mut count,  &mut info as *mut POINTER_INFO ) } == FALSE {
+                            let mut info: [POINTER_INFO; 5] = [POINTER_INFO::default(); 5];
+                            if unsafe {
+                                GetPointerInfoHistory(
+                                    pointer_id,
+                                    &mut count,
+                                    &mut info as *mut POINTER_INFO,
+                                )
+                            } == FALSE
+                            {
                                 return false;
                             }
                             debug_assert_ne!(count, 0);
                             debug_assert!(count <= 5);
-                            for i in (0..(count as usize).min(5)).rev() { // NOTE: Newest events are at the beginning of the array.
-                                    // TODO: What is special about PT_TOUCHPAD events - anything?
-                                    // At this point assume wheel-delta only applies to mouse events?
-                                    let wheel_delta = if msg == WM_POINTERWHEEL || msg == WM_POINTERHWHEEL {
-                                        // TODO: apply mouse sensitivity based on
-                                        // SPI_GETWHEELSCROLLLINES setting.
-                                        let system_delta = HIWORD(wparam as u32) as i16 as f64;
-                                        let is_shift = modifiers.shift();
-                                        let wheel_delta = match msg {
-                                            WM_POINTERWHEEL if is_shift => Vec2::new(-system_delta, 0.),
-                                            WM_POINTERWHEEL => Vec2::new(0., -system_delta),
-                                            WM_POINTERHWHEEL => Vec2::new(system_delta, 0.),
-                                            _ => unreachable!(),
-                                        };
-                                        Vec2::new(wheel_delta.x, wheel_delta.y)
-                                    } else {
-                                        Vec2::ZERO
+                            for i in (0..(count as usize).min(5)).rev() {
+                                // NOTE: Newest events are at the beginning of the array.
+                                // TODO: What is special about PT_TOUCHPAD events - anything?
+                                // At this point assume wheel-delta only applies to mouse events?
+                                let wheel_delta = if msg == WM_POINTERWHEEL
+                                    || msg == WM_POINTERHWHEEL
+                                {
+                                    // TODO: apply mouse sensitivity based on
+                                    // SPI_GETWHEELSCROLLLINES setting.
+                                    let system_delta = HIWORD(wparam as u32) as i16 as f64;
+                                    let is_shift = modifiers.shift();
+                                    let wheel_delta = match msg {
+                                        WM_POINTERWHEEL if is_shift => Vec2::new(-system_delta, 0.),
+                                        WM_POINTERWHEEL => Vec2::new(0., -system_delta),
+                                        WM_POINTERHWHEEL => Vec2::new(system_delta, 0.),
+                                        _ => unreachable!(),
                                     };
-                                    let pointer_type = PointerType::Mouse(MouseInfo { wheel_delta });
+                                    Vec2::new(wheel_delta.x, wheel_delta.y)
+                                } else {
+                                    Vec2::ZERO
+                                };
+                                let pointer_type = PointerType::Mouse(MouseInfo { wheel_delta });
 
-                                    if !dispatch_pointer_event(hwnd, msg, info[i], s, pointer_type, self.scale(), modifiers) {
-                                        return false;
-                                    }
-
+                                if !dispatch_pointer_event(
+                                    hwnd,
+                                    msg,
+                                    info[i],
+                                    s,
+                                    pointer_type,
+                                    self.scale(),
+                                    modifiers,
+                                ) {
+                                    return false;
+                                }
                             }
                         }
                         PT_PEN => {
-                            let mut info: [POINTER_PEN_INFO;5] = [POINTER_PEN_INFO::default();5];
+                            let mut info: [POINTER_PEN_INFO; 5] = [POINTER_PEN_INFO::default(); 5];
                             let mut count: u32 = 5;
-                            if unsafe { GetPointerPenInfoHistory(pointer_id,&mut count,  &mut info as *mut POINTER_PEN_INFO ) } == FALSE {
-                               return false;
+                            if unsafe {
+                                GetPointerPenInfoHistory(
+                                    pointer_id,
+                                    &mut count,
+                                    &mut info as *mut POINTER_PEN_INFO,
+                                )
+                            } == FALSE
+                            {
+                                return false;
                             }
                             debug_assert_ne!(count, 0);
                             debug_assert!(count <= 5);
                             for i in (0..(count as usize).min(5)).rev() {
                                 let info = info[i];
-                                let (altitude_angle, azimuth_angle) = PenInfo::tilt_to_spherical(info.tiltX, info.tiltY);
+                                let (altitude_angle, azimuth_angle) =
+                                    PenInfo::tilt_to_spherical(info.tiltX, info.tiltY);
                                 let pointer_type = PointerType::Pen(PenInfo {
                                     pressure: info.pressure as f32 / 1024.0, // normalise to 0.0..1.0
                                     tangential_pressure: 0.0, // Not available on windows
@@ -1164,15 +1221,31 @@ impl WndProc for MyWndProc {
                                     azimuth_angle,
                                     altitude_angle,
                                 });
-                                if !dispatch_pointer_event(hwnd, msg, info.pointerInfo, s, pointer_type, self.scale(), modifiers) {
+                                if !dispatch_pointer_event(
+                                    hwnd,
+                                    msg,
+                                    info.pointerInfo,
+                                    s,
+                                    pointer_type,
+                                    self.scale(),
+                                    modifiers,
+                                ) {
                                     return false;
                                 }
                             }
                         }
                         PT_TOUCH => {
-                            let mut info: [POINTER_TOUCH_INFO;5] = [POINTER_TOUCH_INFO::default();5];
+                            let mut info: [POINTER_TOUCH_INFO; 5] =
+                                [POINTER_TOUCH_INFO::default(); 5];
                             let mut count: u32 = 5;
-                            if unsafe { GetPointerTouchInfoHistory(pointer_id,&mut count,  &mut info as *mut POINTER_TOUCH_INFO ) } == FALSE {
+                            if unsafe {
+                                GetPointerTouchInfoHistory(
+                                    pointer_id,
+                                    &mut count,
+                                    &mut info as *mut POINTER_TOUCH_INFO,
+                                )
+                            } == FALSE
+                            {
                                 return false;
                             };
                             debug_assert_ne!(count, 0);
@@ -1182,20 +1255,34 @@ impl WndProc for MyWndProc {
                                 // See if any of the fields in touchMask are valid?
                                 let contact_geometry_rect = info.rcContact;
                                 let contact_geometry = Size::new(
-                                    i32::max(1, contact_geometry_rect.right - contact_geometry_rect.left) as f64,
-                                    i32::max(1, contact_geometry_rect.bottom - contact_geometry_rect.top) as f64
+                                    i32::max(
+                                        1,
+                                        contact_geometry_rect.right - contact_geometry_rect.left,
+                                    ) as f64,
+                                    i32::max(
+                                        1,
+                                        contact_geometry_rect.bottom - contact_geometry_rect.top,
+                                    ) as f64,
                                 );
                                 let pointer_type = PointerType::Touch(TouchInfo {
                                     // We assume that the contact geometry is always centered around the pointer pos.
                                     contact_geometry,
                                     pressure: info.pressure as f32 / 1024.0,
                                 });
-                                if !dispatch_pointer_event(hwnd, msg, info.pointerInfo, s, pointer_type, self.scale(), modifiers) {
+                                if !dispatch_pointer_event(
+                                    hwnd,
+                                    msg,
+                                    info.pointerInfo,
+                                    s,
+                                    pointer_type,
+                                    self.scale(),
+                                    modifiers,
+                                ) {
                                     return false;
                                 }
                             }
                         }
-                        PT_POINTER | _ => unreachable!("Unknown or invalid pointer type")
+                        PT_POINTER | _ => unreachable!("Unknown or invalid pointer type"),
                     };
                     // What kind of pointer event was this?
                     true
@@ -1603,7 +1690,7 @@ impl WindowBuilder {
                 last_click_time: Instant::now(),
                 last_click_pos: (0, 0),
                 click_count: 0,
-                prev_pointer_event: HashMap::new()
+                prev_pointer_event: HashMap::new(),
             };
             win.wndproc.connect(&handle, state);
 

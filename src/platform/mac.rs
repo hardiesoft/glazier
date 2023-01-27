@@ -29,7 +29,6 @@ pub trait ApplicationExt {
     /// On platforms with no global application menu, this has no effect.
     fn set_menu(&self, menu: crate::Menu);
 
-
     // TODO: Occlusion?
 }
 
