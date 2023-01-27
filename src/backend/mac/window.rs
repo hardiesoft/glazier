@@ -761,8 +761,7 @@ fn pointer_event(
 
         println!("device ID {device_id}, {wheel_delta}");
         let pointer_type = match event_type {
-            NSEventType::NSMouseEntered
-            | NSEventType::NSMouseExited => {
+            NSEventType::NSMouseEntered | NSEventType::NSMouseExited => {
                 PointerType::Mouse(MouseInfo { wheel_delta })
             }
             // Need to make sure the event-type is mouse, before we try to get the subtype.
@@ -775,8 +774,7 @@ fn pointer_event(
             | NSEventType::NSRightMouseDragged
             | NSEventType::NSOtherMouseUp
             | NSEventType::NSOtherMouseDown
-            | NSEventType::NSOtherMouseDragged
-            => {
+            | NSEventType::NSOtherMouseDragged => {
                 println!("Type {:?}", event_type);
                 let sub_type: NSEventSubtypeMouse = msg_send![nsevent, subtype];
                 // TODO: Getting subtype fails on NSMouseEntered
